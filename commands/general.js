@@ -13,6 +13,7 @@ import {
   withWatermark,
 } from '../lib/utils.js';
 import { buildMenu, buildCommandHelp } from '../lib/menu.js';
+import { participantJid } from '../lib/targets.js';
 
 const ZENITSU_QUOTES = [
   '⚡ "El trueno solo asusta a quienes no confían en su corazón." — Zenitsu Agatsuma',
@@ -332,7 +333,7 @@ export default [
     admin: true,
     async execute(ctx) {
       const meta = await ctx.getGroupMeta();
-      const ids = meta.participants.map((p) => p.id);
+      const ids = meta.participants.map((p) => participantJid(p)).filter(Boolean);
       const text = ctx.text || '⚡ ¡Atención a todos los cazadores!';
       // Mención fantasma: se notifica a todos con "mentions", pero el texto
       // no incluye "@número". Así no se ve la lista de usuarios mencionados.
@@ -349,7 +350,10 @@ export default [
     admin: true,
     async execute(ctx) {
       const meta = await ctx.getGroupMeta();
-      const admins = meta.participants.filter((p) => p.admin).map((p) => p.id);
+      const admins = meta.participants
+        .filter((p) => p.admin)
+        .map((p) => participantJid(p))
+        .filter(Boolean);
       if (!admins.length) {
         await ctx.reply('⚠️ Este grupo no tiene administradores.');
         return;

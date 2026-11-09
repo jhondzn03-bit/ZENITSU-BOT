@@ -187,8 +187,8 @@ El prefijo por defecto es `.`. Escribe `.menu` para ver todo.
 | `.owners` | Lista los owners |
 | `.addowner <número>` | Añade un owner |
 | `.delowner <número>` | Quita un owner |
-| `.code <número>` | Crea un **subbot** vinculado con código de 8 dígitos |
-| `.subbots` | Lista los subbots activos |
+| `.code [número]` | Genera al instante el código de vinculación de un subbot (sin número usa el tuyo) |
+| `.bots` | Muestra cuántos bots hay registrados y su estado |
 | `.delsubbot <número>` | Elimina un subbot |
 | `.eval <js>` | Ejecuta JavaScript en el bot (antes era `.code`) |
 | `.exec <comando>` | Ejecuta un comando de terminal |
@@ -273,10 +273,11 @@ El banner y el menú se envían **siempre en el mismo mensaje**: la imagen/video
 `.code` ya **no ejecuta JavaScript**: ahora crea un **subbot** con su propia sesión.
 
 ```bash
-.code 50312345678
+.code              # usa tu propio número
+.code 50312345678  # usa otro número
 ```
 
-1. El bot pide un código de vinculación para ese número.
+1. El bot genera el código de vinculación al instante, sin preguntas extra.
 2. Escribe el código de 8 dígitos en el WhatsApp de ese número.
 3. El subbot queda guardado en `session/subbots/<número>/` y se reconecta solo al reiniciar.
 
@@ -284,8 +285,8 @@ Comandos relacionados:
 
 | Comando | Función |
 | --- | --- |
-| `.code <número>` | Vincula un subbot nuevo |
-| `.subbots` | Lista subbots y su estado |
+| `.code [número]` | Vincula un subbot nuevo al instante |
+| `.bots` | Muestra el total, activos y vinculados |
 | `.delsubbot <número>` | Elimina un subbot y su sesión |
 
 Para ejecutar JavaScript usa ahora `.eval <código>`.

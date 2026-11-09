@@ -9,7 +9,12 @@ import {
   numberToJid,
   withWatermark,
 } from '../lib/utils.js';
-import { getTargetJid, getTargetJids, isGroupAdmin } from '../lib/targets.js';
+import {
+  getTargetJid,
+  getTargetJids,
+  isGroupAdmin,
+  participantJid,
+} from '../lib/targets.js';
 
 async function getImageBuffer(ctx) {
   if (ctx.quoted?.mediaType === 'image') return ctx.downloadQuoted();
@@ -214,11 +219,14 @@ export default [
         return;
       }
       const list = admins
-        .map((p, i) => `${i + 1}. @${jidToNumber(p.id)} ${p.admin === 'superadmin' ? '👑' : '🛡️'}`)
+        .map(
+          (p, i) =>
+            `${i + 1}. @${jidToNumber(participantJid(p))} ${p.admin === 'superadmin' ? '👑' : '🛡️'}`,
+        )
         .join('\n');
       await ctx.send({
         text: `🛡️ *ADMINISTRADORES DE ${meta.subject}*\n\n${list}`,
-        mentions: admins.map((p) => p.id),
+        mentions: admins.map((p) => participantJid(p)),
       });
     },
   },

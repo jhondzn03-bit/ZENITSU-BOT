@@ -17,6 +17,7 @@ import { commandMap, commands } from '../commands/index.js';
 import { buildMenu, buildCommandHelp } from '../lib/menu.js';
 import { serializeMessage } from '../lib/serialize.js';
 import { trackSent, wasSent, getGroupMetadata } from '../lib/state.js';
+import { findParticipant } from '../lib/targets.js';
 import { aiText } from '../lib/api.js';
 
 const messageCache = new Map();
@@ -72,10 +73,16 @@ function isSpamming(key) {
   return arr.length > 9;
 }
 
-function adminFlags(meta, sock, senderNumber) {
-  const botNumber = jidToNumber(sock.user?.id);
-  const participant = meta?.participants?.find((p) => jidToNumber(p.id) === senderNumber);
-  const bot = meta?.participants?.find((p) => jidToNumber(p.id) === botNumber);
+function adminFlags(meta, sock, senderIds) {
+  // WhatsApp puede identificar al mismo usuario con PN (@s.whatsapp.net) o LID (@lid).
+  const participant = (Array.isArray(senderIds) ? senderIds : [senderIds])
+    .filter(Boolean)
+    .map((value) => findParticipant(meta, value))
+    .find(Boolean);
+  const botIds = [sock.user?.id, sock.user?.phoneNumber, sock.user?.lid].filter(Boolean);
+  const bot = botIds
+    .map((value) => findParticipant(meta, value))
+    .find(Boolean);
   return {
     isAdmin: participant?.admin === 'admin' || participant?.admin === 'superadmin',
     isBotAdmin: bot?.admin === 'admin' || bot?.admin === 'superadmin',
@@ -248,7 +255,7 @@ export async function handleMessage(sock, msg) {
   const store = db();
   store.stats.messages = (store.stats.messages || 0) + 1;
 
-  const owner = isOwnerNumber(m.senderNumber);
+  let owner = isOwnerNumber(m.senderNumber);
   if (!owner && store.users[m.sender]?.banned) return;
 
   const group = m.isGroup ? getGroup(m.chat) : null;
@@ -259,9 +266,16 @@ export async function handleMessage(sock, msg) {
   if (m.isGroup) {
     try {
       groupMeta = await getGroupMetadata(sock, m.chat);
-      const flags = adminFlags(groupMeta, sock, m.senderNumber);
+      const flags = adminFlags(groupMeta, sock, [m.sender, m.senderAlt, m.senderNumber]);
       isAdmin = flags.isAdmin;
       isBotAdmin = flags.isBotAdmin;
+      // Si el remitente llegó como LID, usa el número real del participante
+      // para reconocer al owner.
+      if (!owner && flags.participant) {
+        const realNumber =
+          flags.participant.phoneNumber || flags.participant.id || flags.participant.lid;
+        if (isOwnerNumber(jidToNumber(realNumber))) owner = true;
+      }
     } catch {}
   }
 

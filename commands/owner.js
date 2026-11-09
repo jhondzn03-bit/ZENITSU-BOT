@@ -466,18 +466,22 @@ export default [
     name: 'code',
     aliases: ['subbot', 'addsubbot', 'createsubbot'],
     category: 'owner',
-    desc: 'Crea y vincula un subbot con su propio número de WhatsApp.',
-    usage: 'code <número> [nombre]',
+    desc: 'Genera al instante el código de vinculación de un subbot.',
+    usage: 'code [número] [nombre]',
     owner: true,
     async execute(ctx) {
-      const number = String(ctx.args[0] || '').replace(/\D/g, '');
+      // Si no se pasa número, usa el número de quien escribe el comando.
+      const raw = String(ctx.args[0] || '').replace(/\D/g, '');
+      const number =
+        raw.length >= 7 ? raw : String(ctx.senderNumber || '').replace(/\D/g, '');
       if (number.length < 7) {
         await ctx.reply(
-          `🤖 *SISTEMA DE SUBBOTS*\n\nUn subbot es otro WhatsApp controlado por este mismo bot, con su propia sesión.\n\n💡 Uso: *${ctx.prefix}code 503XXXXXXXX [nombre]*\n\n▸ ${ctx.prefix}subbots — ver subbots\n▸ ${ctx.prefix}delsubbot <número> — eliminar`,
+          `💡 No pude detectar tu número.\n\nUsa: *${ctx.prefix}code 503XXXXXXXX*`,
         );
         return;
       }
-      const name = ctx.args.slice(1).join(' ').trim();
+      const name =
+        raw.length >= 7 ? ctx.args.slice(1).join(' ').trim() : ctx.args.join(' ').trim();
       const { addSubbot, startSubbot, isSubbotRunning } = await import('../lib/subbots.js');
 
       if (isSubbotRunning(number)) {
@@ -486,9 +490,6 @@ export default [
       }
 
       const record = addSubbot(number, name);
-      await ctx.reply(
-        `⏳ Iniciando subbot *${record.name}* (+${number})...\n\n_Espera el código de vinculación._`,
-      );
 
       try {
         const result = await startSubbot(number);
@@ -529,27 +530,39 @@ export default [
     },
   },
   {
-    name: 'subbots',
-    aliases: ['listsubbots', 'subs'],
+    name: 'bots',
+    aliases: ['subbots', 'listsubbots', 'subs', 'listbots', 'botsregistrados'],
     category: 'owner',
-    desc: 'Lista los subbots y su estado.',
-    usage: 'subbots',
+    desc: 'Muestra cuántos bots hay registrados y su estado.',
+    usage: 'bots',
     owner: true,
     async execute(ctx) {
-      const { listSubbots, isSubbotRunning } = await import('../lib/subbots.js');
+      const {
+        listSubbots,
+        isSubbotRunning,
+        isSubbotRegistered,
+      } = await import('../lib/subbots.js');
       const list = listSubbots();
       if (!list.length) {
         await ctx.reply(
-          `🤖 No hay subbots creados.\n\n💡 Crea uno con *${ctx.prefix}code 503XXXXXXXX [nombre]*`,
+          `🤖 *BOTS REGISTRADOS*\n\n📊 Total: *0*\n\n💡 Crea uno con *${ctx.prefix}code 503XXXXXXXX*`,
         );
         return;
       }
+      const runningCount = list.filter((s) => isSubbotRunning(s.number)).length;
+      const registeredCount = list.filter((s) => isSubbotRegistered(s.number)).length;
       const lines = list.map((s) => {
         const running = isSubbotRunning(s.number);
-        return `${running ? '🟢' : '⚪'} *${s.name}* · +${s.number}${s.jid ? `\n   🆔 ${s.jid}` : ''}`;
+        const linked = isSubbotRegistered(s.number);
+        return `${running ? '🟢' : '⚪'} *${s.name}* · +${s.number}${linked ? ' ✅' : ' ⏳'}${s.jid ? `\n   🆔 ${s.jid}` : ''}`;
       });
       await ctx.reply(
-        `🤖 *SUBBOTS DE ZENITSU BOT*\n\n${lines.join('\n\n')}\n\n🟢 Activo · ⚪ Detenido`,
+        `🤖 *BOTS REGISTRADOS*\n\n` +
+          `📊 Total: *${list.length}*\n` +
+          `🟢 Activos: *${runningCount}*\n` +
+          `✅ Vinculados: *${registeredCount}*\n\n` +
+          `${lines.join('\n\n')}\n\n` +
+          `🟢 Activo · ⚪ Detenido · ✅ Vinculado · ⏳ Sin vincular`,
       );
     },
   },
