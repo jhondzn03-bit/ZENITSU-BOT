@@ -63,7 +63,9 @@ async function sendMenu(ctx) {
         await ctx.send({ image: buffer, caption: text });
       }
       return;
-    } catch {}
+    } catch (err) {
+      console.error('[MENU] No se pudo enviar el banner con el menú:', err?.message || err);
+    }
   }
   await ctx.send({ text });
 }
