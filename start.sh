@@ -18,10 +18,8 @@ export ZENITSU_SUPERVISED=1
 while true; do
   node index.js
   CODE=$?
-  if [ "$CODE" -eq 0 ]; then
-    echo "ZENITSU BOT se detuvo correctamente."
-    break
-  fi
+  # Reinicia siempre (incluso si WhatsApp cierra la sesión con código 0).
+  # Para detenerlo de verdad: pkill -f "[s]tart.sh" y luego pkill -f "[n]ode index.js".
   echo "ZENITSU BOT se cerró (código $CODE). Reiniciando en 5 segundos..."
   sleep 5
 done

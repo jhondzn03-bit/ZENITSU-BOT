@@ -262,9 +262,9 @@ Cambia el aspecto de `.menu` con:
 - `.setmenu` sin argumentos muestra la lista y el estilo actual.
 - `.setmenu reset` vuelve a `galactico`.
 - `.setbanner` acepta imágenes, GIFs y videos de hasta **15 segundos**.
-- `.setlink <url>` cambia el enlace que aparece al final del menú.
+- `.setlink <url>` cambia un enlace opcional al final del menú (vacío por defecto, sin el link del repositorio).
 
-El banner se envía como imagen/video con un texto corto y luego el menú completo como mensaje aparte (así se evita el límite de caracteres de los pies de foto de WhatsApp).
+El banner y el menú se envían **siempre en el mismo mensaje**: la imagen/video lleva el menú completo como pie de foto. Nunca se separan en dos mensajes.
 
 ---
 
@@ -330,7 +330,7 @@ mi-primer-proyecto/
 ## 🌐 Repositorio
 
 - GitHub: <https://github.com/jhondzn03-bit/ZENITSU-BOT>
-- Cambia el enlace mostrado en el menú con `.setlink <url>`.
+- El menú no muestra el enlace del repositorio por defecto. Usa `.repo` si quieres verlo.
 
 ---
 

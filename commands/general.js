@@ -36,7 +36,7 @@ async function sendMenu(ctx) {
     (c) => !c.hidden && (c.category !== 'owner' || isOwner),
   );
   const botName = store.botName || config.botName;
-  const menuLink = store.menuLink || config.menuLink || config.repo || '';
+  // El menú NO muestra el enlace del repositorio.
   const text = buildMenu({
     commands: ctx.commands || [],
     prefix: store.prefix || config.prefix,
@@ -46,13 +46,11 @@ async function sendMenu(ctx) {
     mode: store.mode || 'public',
     uptime: getUptime(),
     totalCommands: available.length,
-    menuLink,
+    menuLink: store.menuLink || '',
     style: store.menuStyle || 'galactico',
   });
 
-  // El menú completo supera el límite de pie de foto de WhatsApp.
-  // Por eso el banner va con un pie corto y el menú se envía como texto.
-  const shortCaption = `⚡ *${botName}*${menuLink ? `\n\n🔗 ${menuLink}` : ''}`;
+  // La imagen/video del banner y el menú van SIEMPRE en el mismo mensaje.
   const banner = store.banner;
   if (banner && fs.existsSync(banner)) {
     try {
@@ -60,10 +58,11 @@ async function sendMenu(ctx) {
       const isVideo =
         store.bannerType === 'video' || /\.(mp4|webm)$/i.test(String(banner));
       if (isVideo) {
-        await ctx.send({ video: buffer, gifPlayback: true, caption: shortCaption });
+        await ctx.send({ video: buffer, gifPlayback: true, caption: text });
       } else {
-        await ctx.send({ image: buffer, caption: shortCaption });
+        await ctx.send({ image: buffer, caption: text });
       }
+      return;
     } catch {}
   }
   await ctx.send({ text });

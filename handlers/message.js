@@ -221,7 +221,8 @@ async function handleAutoAi(sock, msg, m) {
 export async function handleMessage(sock, msg) {
   if (!msg?.message) return;
   if (msg.key.remoteJid === 'status@broadcast') {
-    if (db().autoStatus) {
+    // Con .autoread o .autostatus activos, el bot marca los estados como vistos.
+    if (db().autoStatus || db().autoRead) {
       try {
         await sock.readMessages([msg.key]);
       } catch {}

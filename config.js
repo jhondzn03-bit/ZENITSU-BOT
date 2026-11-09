@@ -41,7 +41,7 @@ export const config = {
 
   // ─── Enlaces ──────────────────────────────────────────────────────────────
   repo: 'https://github.com/jhondzn03-bit/ZENITSU-BOT',
-  menuLink: 'https://github.com/jhondzn03-bit/ZENITSU-BOT',
+  menuLink: '',
   support: 'https://wa.me/50375638328',
 };
 
