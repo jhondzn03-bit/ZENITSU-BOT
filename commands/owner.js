@@ -465,10 +465,9 @@ export default [
   {
     name: 'code',
     aliases: ['subbot', 'addsubbot', 'createsubbot'],
-    category: 'owner',
-    desc: 'Genera al instante el código de vinculación de un subbot.',
+    category: 'subbots',
+    desc: 'Genera al instante el código de vinculación de un subbot. ¡Público!',
     usage: 'code [número] [nombre]',
-    owner: true,
     async execute(ctx) {
       // Si no se pasa número, usa el número de quien escribe el comando.
       const raw = String(ctx.args[0] || '').replace(/\D/g, '');
