@@ -1,0 +1,30 @@
+{
+  "name": "zenitsu-bot",
+  "version": "2.0.0",
+  "description": "ZENITSU BOT - Bot de WhatsApp con Baileys, código de vinculación de 8 dígitos y comandos ilimitados.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "check": "node --check index.js"
+  },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "baileys",
+    "zenitsu",
+    "termux"
+  ],
+  "author": "ZENITSU BOT",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "node-webpmux": "^3.2.1",
+    "pino": "^9.5.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

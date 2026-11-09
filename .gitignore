@@ -1,0 +1,8 @@
+node_modules/
+session/
+tmp/
+database/
+*.log
+.DS_Store
+npm-debug.log*
+ultimo-codigo.txt
