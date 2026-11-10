@@ -10,8 +10,9 @@ import economy from './economy.js';
 import info from './info.js';
 import extra from './extra.js';
 import spam from './spam.js';
+import newstuff from './newstuff.js';
 
-const modules = [general, owner, admin, tools, downloads, ai, anime, fun, economy, info, extra, spam];
+const modules = [general, owner, admin, tools, downloads, ai, anime, fun, economy, info, extra, spam, newstuff];
 
 export const commands = modules.flat().filter((c) => c && c.name);
 

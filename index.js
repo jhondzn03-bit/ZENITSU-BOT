@@ -19,6 +19,7 @@ import { handleGroupParticipants } from './handlers/group.js';
 import { invalidateGroupMeta, trackSent } from './lib/state.js';
 import { startSavedSubbots } from './lib/subbots.js';
 import { resumeSpamIfEnabled } from './lib/spam.js';
+import { resumeReminders } from './lib/reminders.js';
 
 globalThis.__ZENITSU_START__ = Date.now();
 globalThis.__ZENITSU_COMMANDS__ = commands;
@@ -36,6 +37,38 @@ let subbotsStarted = false;
 // El aviso al owner (comandos nuevos + actualizaciones) se envía UNA sola
 // vez por arranque del bot — no en cada reconexión de WhatsApp.
 let ownerNotified = false;
+
+// ─── Guardián de logs de PM2 ───────────────────────────────────────────────
+// En un teléfono el espacio es limitado: si los logs del bot crecen sin
+// control pueden llenar el almacenamiento y tumbar TODO el sistema.
+// Cada 30 min se revisan y, si pasan de 5 MB, se conservan solo los últimos
+// 64 KB (lo suficiente para diagnosticar) y el resto se descarta.
+function guardPm2Logs() {
+  const home = process.env.HOME || '/data/data/com.termux/files/home';
+  const files = [
+    `${home}/.pm2/logs/zenitsu-bot-out.log`,
+    `${home}/.pm2/logs/zenitsu-bot-error.log`,
+  ];
+  for (const file of files) {
+    try {
+      const stat = fs.statSync(file);
+      if (stat.size < 5 * 1024 * 1024) continue;
+      const keep = 64 * 1024;
+      const fd = fs.openSync(file, 'r');
+      const start = Math.max(0, stat.size - keep);
+      const chunk = Buffer.alloc(stat.size - start);
+      fs.readSync(fd, chunk, 0, chunk.length, start);
+      fs.closeSync(fd);
+      // pm2 abre los logs en modo append: tras truncar, sigue escribiendo al
+      // final del archivo nuevo sin corromper nada.
+      fs.truncateSync(file, 0);
+      fs.appendFileSync(file, chunk);
+      console.log(`🧹 Log truncado: ${file} (${Math.round(stat.size / 1024)} KB → 64 KB)`);
+    } catch {}
+  }
+}
+setInterval(guardPm2Logs, 30 * 60 * 1000).unref();
+guardPm2Logs();
 
 function banner() {
   const store = db();
@@ -251,6 +284,14 @@ async function start() {
         }
       } catch {}
 
+      // Reanuda los recordatorios pendientes de los usuarios.
+      try {
+        const r = resumeReminders(sock);
+        if (r.scheduled || r.discarded) {
+          console.log(`⏰ Recordatorios: ${r.scheduled} activos, ${r.discarded} descartados.`);
+        }
+      } catch {}
+
       try {
         const ownerNumber = jidToNumber(db().owners?.[0] || config.ownerNumber);
         const botNumber = jidToNumber(sock.user?.id);
@@ -261,12 +302,14 @@ async function start() {
             text: withWatermark(
               `⚡ *ZENITSU BOT CONECTADO*\n\n🤖 Bot: ${db().botName || config.botName}\n⚙️ Prefijo: ${prefix}\n📦 Comandos: ${commands.length}\n\n` +
                 `🆕 *ÚLTIMAS ACTUALIZACIONES:*\n` +
-                `▸ ${prefix}spam — envío automático a grupos cada 2 min\n` +
-                `▸ ${prefix}grupos — lista los grupos donde estoy\n` +
-                `▸ ${prefix}salir <nº> — salgo del grupo número n\n` +
-                `▸ .salir ahora deja una despedida con frase de Zenitsu y tu wa.me\n` +
-                `▸ Al salir de un grupo, el chat se archiva (sin chats fantasma)\n\n` +
-                `_${prefix}menu para ver todo · ${prefix}spam ayuda para el spam_`,
+                `▸ ${prefix}remind — recordatorios: *${prefix}remind 30m tomar agua*\n` +
+                `▸ ${prefix}steam — busca juegos en Steam con precio y puntaje\n` +
+                `▸ ${prefix}nowa — averigua si un número tiene WhatsApp\n` +
+                `▸ ${prefix}readmore a | b — texto oculto tras "leer más"\n` +
+                `▸ +18 mejorado: *.pornhub <nombre>* da lista de 15 → elige con *.pornhub 3*\n` +
+                `▸ Menú rediseñado: más bonito y compacto (rejilla de 2 columnas)\n` +
+                `▸ Guardián de logs: ya no llenan el almacenamiento del teléfono\n\n` +
+                `_${prefix}menu para ver el nuevo diseño ⚡_`,
             ),
           });
           trackSent(sent);

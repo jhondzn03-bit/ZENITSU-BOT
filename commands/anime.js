@@ -96,28 +96,102 @@ function nsfwCommand(name, aliases, category, label) {
   };
 }
 
-// Videos +18 de XVideos / XNXX / PornHub. Acepta un enlace directo o el nombre
-// a buscar (toma el primer resultado, igual que .play). Envía avances para que
-// nunca quede "pensando" sin decir nada.
+// Videos +18 de XVideos / XNXX / PornHub. Tres formas de usarlo:
+//   .pornhub mia khalifa  → lista numerada con 15 resultados para elegir
+//   .pornhub 3            → descarga el resultado 3 de la última lista
+//   .pornhub <enlace>     → descarga directo del enlace
+// La lista se recuerda por chat durante 15 minutos.
+const ADULT_SEARCH_TTL = 15 * 60 * 1000;
+const adultSearches = new Map(); // chat → { site, gay, label, term, results, at }
+
+function rememberAdultSearch(chat, entry) {
+  const now = Date.now();
+  for (const [key, value] of adultSearches) {
+    if (now - value.at > ADULT_SEARCH_TTL) adultSearches.delete(key);
+  }
+  if (adultSearches.size > 60) adultSearches.delete(adultSearches.keys().next().value);
+  adultSearches.set(chat, entry);
+}
+
+function formatAdultList(entry) {
+  const list = entry.results
+    .map((r, i) => `${String(i + 1).padStart(2)}. ${truncate(r.title, 75)}`)
+    .join('\n');
+  return (
+    `🔎 *+18 · ${entry.label}* — _"${entry.term}"_\n\n${list}\n\n` +
+    `💡 Descarga el que quieras con *${entry.selectHint} <número>*\n` +
+    `_La lista expira en 15 minutos · nueva búsqueda: ${entry.selectHint} <término>_`
+  );
+}
+
 async function sendAdultVideo(ctx, query, { site = 'xvideos', gay = false, source } = {}) {
   const label = source || site;
-  const link = extractUrl(query) || (isUrl(String(query).trim()) ? String(query).trim() : '');
+  const arg = String(query || '').trim();
+  const command = ctx.command || site;
 
-  let info;
+  // 1. Selector numérico: ".pornhub 3" elige el resultado 3 de la última lista.
+  if (/^\d{1,2}$/.test(arg)) {
+    const last = adultSearches.get(ctx.chat);
+    if (!last) {
+      throw new Error('no hay una lista reciente aquí. Busca primero con el nombre del video');
+    }
+    const index = Number(arg);
+    if (index < 1 || index > last.results.length) {
+      throw new Error(`la lista tiene ${last.results.length} resultados (1 a ${last.results.length})`);
+    }
+    const chosen = last.results[index - 1];
+    await ctx.reply(
+      `📥 *+18 · ${last.label}* · resultado ${index}/${last.results.length}\n\n🎬 ${truncate(chosen.title, 90)}\n\n_Descargando video... ⏳_`,
+    );
+    let info;
+    try {
+      info = await adultVideoInfo(chosen.url);
+    } catch (err) {
+      throw friendlyAdultError(err);
+    }
+    await sendAdultVideoBuffer(ctx, info, last.label);
+    return;
+  }
+
+  // 2. Enlace directo.
+  const link = extractUrl(arg) || (isUrl(arg) ? arg : '');
   if (link) {
     if (!isAdultSite(link)) throw new Error('solo puedo descargar videos de XVideos, XNXX o PornHub');
     await ctx.reply(`📥 *+18 · ${label}*\n\n_Extractiendo video..._`);
-    info = await adultVideoInfo(link);
-  } else {
-    const term = String(query || '').trim();
-    if (!term) throw new Error('escribe el nombre de un video o un enlace');
-    const results = await adultVideoSearch(term, { site, gay, limit: 5 });
-    await ctx.reply(
-      `🔎 *+18 · ${label}*\n\n1º resultado: *${truncate(results[0].title, 90)}*\n\n_Descargando video... ⏳_`,
-    );
-    info = await adultVideoInfo(results[0].url);
+    let info;
+    try {
+      info = await adultVideoInfo(link);
+    } catch (err) {
+      throw friendlyAdultError(err);
+    }
+    await sendAdultVideoBuffer(ctx, info, label);
+    return;
   }
 
+  // 3. Búsqueda por nombre: guarda la lista y deja elegir al usuario.
+  const term = arg || (gay ? 'gay' : '');
+  if (!term) throw new Error('escribe el nombre de un video, un número de la lista o un enlace');
+  let results;
+  try {
+    results = await adultVideoSearch(term, { site, gay, limit: 15 });
+  } catch (err) {
+    throw friendlyAdultError(err);
+  }
+  const entry = {
+    site,
+    gay,
+    label,
+    term,
+    results,
+    at: Date.now(),
+    selectHint: `${ctx.prefix}${command}`,
+  };
+  rememberAdultSearch(ctx.chat, entry);
+  await ctx.reply(formatAdultList(entry));
+}
+
+// Envía el buffer del video +18 con su caption.
+async function sendAdultVideoBuffer(ctx, info, label) {
   const buffer = await adultVideoBuffer(info);
   const sent = await ctx.sock.sendMessage(
     ctx.chat,
@@ -129,6 +203,16 @@ async function sendAdultVideo(ctx, query, { site = 'xvideos', gay = false, sourc
     { quoted: ctx.msg },
   );
   trackSent(sent);
+}
+
+// Traduce errores de red crudos ("fetch failed", ECONNRESET…) a un mensaje
+// claro y elegante para el usuario.
+function friendlyAdultError(err) {
+  const raw = String(err?.message || err || '');
+  if (/fetch failed|ECONNRESET|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|aborted|timeout|network/i.test(raw)) {
+    return new Error('no pude conectar con el sitio ahora mismo (red lenta o bloqueada). Intenta de nuevo en un rato ⏳');
+  }
+  return err;
 }
 
 export default [
@@ -352,13 +436,17 @@ export default [
         .join('\n');
       await ctx.reply(
         `🔥 *MENÚ NSFW (+18)* 🔥\n\n*IMÁGENES Y GIFS*\n${list}\n\n` +
-          `*VIDEOS 🎬*\n` +
+          `*VIDEOS 🎬 (con lista para elegir)*\n` +
           `📥 *${ctx.prefix}xvideo* <nombre> — busca en XVideos\n` +
           `📥 *${ctx.prefix}xnxx* <nombre> — busca en XNXX\n` +
           `📥 *${ctx.prefix}gayvideo* <nombre> — videos gays\n` +
           `📥 *${ctx.prefix}pornhub* <nombre> — busca en PornHub\n\n` +
-          `💡 Todos aceptan también el *enlace directo* del video.\n` +
-          `💡 También: *${ctx.prefix}nsfw <categoría>*\n⚠️ Solo para mayores de edad.`,
+          `*¿CÓMO SE USA?*\n` +
+          `1️⃣ *${ctx.prefix}pornhub <nombre>* → te muestro una lista con 15 resultados\n` +
+          `2️⃣ *${ctx.prefix}pornhub 3* → descargo el número 3 de esa lista\n\n` +
+          `💡 También aceptan el *enlace directo* del video.\n` +
+          `💡 Las listas expiran a los 15 minutos.\n` +
+          `⚠️ Solo para mayores de edad.`,
       );
     },
   },
@@ -377,8 +465,8 @@ export default [
     name: 'xvideo',
     aliases: ['xvideos', 'xv'],
     category: 'nsfw',
-    desc: 'Descarga un video +18 de XVideos: por nombre o enlace.',
-    usage: 'xvideo <nombre o enlace>',
+    desc: 'Busca videos +18 en XVideos: lista de 15 resultados y elige con .xvideo <n>.',
+    usage: 'xvideo <nombre | número | enlace>',
     async execute(ctx) {
       await sendAdultVideo(ctx, ctx.text, { site: 'xvideos', source: 'XVideos' });
     },
@@ -387,19 +475,18 @@ export default [
     name: 'gayvideo',
     aliases: ['gayvid', 'videogay', 'gay'],
     category: 'nsfw',
-    desc: 'Descarga un video gay +18: por nombre o enlace.',
-    usage: 'gayvideo <nombre o enlace>',
+    desc: 'Busca videos gays +18: lista de 15 resultados y elige con .gayvideo <n>.',
+    usage: 'gayvideo <nombre | número | enlace>',
     async execute(ctx) {
-      const term = String(ctx.text || '').trim();
-      await sendAdultVideo(ctx, term || 'gay', { site: 'xvideos', gay: true, source: 'Gay +18' });
+      await sendAdultVideo(ctx, ctx.text, { site: 'xvideos', gay: true, source: 'Gay +18' });
     },
   },
   {
     name: 'xnxx',
     aliases: ['xnxxvideo'],
     category: 'nsfw',
-    desc: 'Descarga un video +18 de XNXX: por nombre o enlace.',
-    usage: 'xnxx <nombre o enlace>',
+    desc: 'Busca videos +18 en XNXX: lista de 15 resultados y elige con .xnxx <n>.',
+    usage: 'xnxx <nombre | número | enlace>',
     async execute(ctx) {
       await sendAdultVideo(ctx, ctx.text, { site: 'xnxx', source: 'XNXX' });
     },
@@ -408,8 +495,8 @@ export default [
     name: 'pornhub',
     aliases: ['ph', 'phvideo'],
     category: 'nsfw',
-    desc: 'Descarga un video +18 de PornHub: por nombre o enlace.',
-    usage: 'pornhub <nombre o enlace>',
+    desc: 'Busca videos +18 en PornHub: lista de 15 resultados y elige con .pornhub <n>.',
+    usage: 'pornhub <nombre | número | enlace>',
     async execute(ctx) {
       await sendAdultVideo(ctx, ctx.text, { site: 'pornhub', source: 'PornHub' });
     },
