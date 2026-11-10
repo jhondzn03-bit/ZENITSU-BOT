@@ -6,10 +6,11 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import fs from 'node:fs';
+import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import qrcode from 'qrcode-terminal';
-import { config } from './config.js';
+import { config, ROOT } from './config.js';
 import { db, saveNow } from './lib/db.js';
 import { cleanTmp, formatDate, jidToNumber, numberToJid, sleep, withWatermark } from './lib/utils.js';
 import { commands } from './commands/index.js';
@@ -27,6 +28,7 @@ let sock = null;
 let reconnectAttempts = 0;
 let pairingRequested = false;
 let pairingFailed = false;
+let lastPairingAt = 0;
 let reconnecting = false;
 let loggedOut = false;
 let subbotsStarted = false;
@@ -50,6 +52,7 @@ function banner() {
 async function requestPairingCode(authState) {
   if (pairingRequested || authState.creds.registered) return;
   pairingRequested = true;
+  lastPairingAt = Date.now();
   const phone = String(config.pairingNumber || config.ownerNumber || '').replace(/\D/g, '');
   if (!phone) {
     console.log('⚠️ No hay número para vincular. Usa PAIRING_NUMBER=503XXXXXXXX npm start');
@@ -106,6 +109,55 @@ async function requestPairingCode(authState) {
   console.log('────────────────────────────────────────────────\n');
 }
 
+// ─── Respaldo de sesión ────────────────────────────────────────────────────
+// Copia la sesión al conectarse y la restaura si la carpeta "session" se
+// pierde, para no tener que pedir código de vinculación otra vez.
+const SESSION_BACKUP_DIR = path.join(ROOT, 'session-backup');
+
+function copyDirSync(src, dest) {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    if (entry.name.startsWith('.')) continue;
+    const from = path.join(src, entry.name);
+    const to = path.join(dest, entry.name);
+    if (entry.isDirectory()) copyDirSync(from, to);
+    else fs.copyFileSync(from, to);
+  }
+}
+
+function backupSession() {
+  try {
+    if (!fs.existsSync(path.join(config.sessionDir, 'creds.json'))) return;
+    fs.rmSync(SESSION_BACKUP_DIR, { recursive: true, force: true });
+    copyDirSync(config.sessionDir, SESSION_BACKUP_DIR);
+    console.log('💾 Sesión respaldada en "session-backup".');
+  } catch (err) {
+    console.error('[RESPALDO]', err?.message || err);
+  }
+}
+
+function restoreSessionIfPossible() {
+  if (process.env.ZENITSU_FRESH === '1') return false;
+  const backupCreds = path.join(SESSION_BACKUP_DIR, 'creds.json');
+  const sessionCreds = path.join(config.sessionDir, 'creds.json');
+  try {
+    if (!fs.existsSync(backupCreds)) return false;
+    const backup = JSON.parse(fs.readFileSync(backupCreds, 'utf8'));
+    if (!backup.registered) return false;
+    if (fs.existsSync(sessionCreds)) {
+      const current = JSON.parse(fs.readFileSync(sessionCreds, 'utf8'));
+      if (current.registered) return false;
+    }
+    fs.rmSync(config.sessionDir, { recursive: true, force: true });
+    copyDirSync(SESSION_BACKUP_DIR, config.sessionDir);
+    console.log('🔄 La sesión se había perdido: restaurada desde "session-backup".');
+    return true;
+  } catch (err) {
+    console.error('[RESTAURAR]', err?.message || err);
+    return false;
+  }
+}
+
 async function start() {
   if (loggedOut) return;
   const { state, saveCreds } = await useMultiFileAuthState(config.sessionDir);
@@ -139,13 +191,23 @@ async function start() {
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (connection === 'connecting' && !state.creds.registered && !pairingRequested) {
-      // Pequeña espera para que el socket esté listo.
-      setTimeout(() => requestPairingCode(state).catch((e) => console.error('Pairing:', e.message)), 1800);
-    }
-
     if (qr && !state.creds.registered) {
-      if (pairingFailed || process.env.USE_QR === '1' || !config.pairingNumber) {
+      // El QR solo llega cuando el socket ya está listo: es el momento
+      // seguro para pedir el código de vinculación (si no, WhatsApp
+      // cierra la conexión con 401 Connection Failure).
+      if (!pairingRequested && !pairingFailed && config.pairingNumber && process.env.USE_QR !== '1') {
+        requestPairingCode(state).catch((e) => console.error('Pairing:', e.message));
+      } else if (
+        !pairingFailed &&
+        config.pairingNumber &&
+        process.env.USE_QR !== '1' &&
+        pairingRequested &&
+        Date.now() - lastPairingAt > 55000
+      ) {
+        // El código caduca (~60s): pide uno nuevo automáticamente.
+        pairingRequested = false;
+        requestPairingCode(state).catch((e) => console.error('Pairing:', e.message));
+      } else if (pairingFailed || process.env.USE_QR === '1' || !config.pairingNumber) {
         console.log('\n📷 Escanea este código QR desde WhatsApp > Dispositivos vinculados:\n');
         qrcode.generate(qr, { small: true });
       }
@@ -161,6 +223,8 @@ async function start() {
       console.log(`  🤖 ${db().botName || config.botName} está en línea.`);
       console.log(`  ⚡ Escribe ${db().prefix || config.prefix}menu en WhatsApp.`);
       console.log(`  🕒 ${formatDate(new Date())}\n`);
+
+      backupSession();
 
       try {
         await sock.sendPresenceUpdate('available');
@@ -195,12 +259,18 @@ async function start() {
       const reason = lastDisconnect?.error?.message || 'desconocido';
       console.log(`\n⚠️ Conexión cerrada (${statusCode || '?'}): ${reason}`);
 
-      if (statusCode === DisconnectReason.loggedOut) {
-        loggedOut = true;
+      // Si aún no está vinculado (código caducado o corte), permite pedir
+      // un código nuevo al reconectar en vez de quedarse esperando.
+      if (!state.creds.registered) {
+        pairingRequested = false;
+        pairingFailed = false;
+      }
+
+      if (statusCode === DisconnectReason.loggedOut && state.creds.registered) {
         console.log('🚪 La sesión fue cerrada desde WhatsApp.');
-        console.log('   Borra la carpeta "session" y vuelve a iniciar para vincular de nuevo.');
-        console.log('   Ejemplo: rm -rf session && npm start\n');
-        return;
+        console.log('   Vincula de nuevo con:  RESET=1 bash pair.sh');
+        console.log('   No se reinicia solo, para no gastar códigos en bucle.');
+        process.exit(78); // 78 = PM2 y start.sh NO reinician el bot.
       }
 
       if (reconnecting) return;
@@ -281,7 +351,18 @@ setInterval(() => cleanTmp(30 * 60 * 1000), 30 * 60 * 1000).unref?.();
 fs.mkdirSync(config.sessionDir, { recursive: true });
 fs.mkdirSync(config.tmpDir, { recursive: true });
 
-start().catch((err) => {
-  console.error('❌ No se pudo iniciar ZENITSU BOT:', err?.message || err);
-  process.exitCode = 1;
-});
+let bootAttempts = 0;
+function boot() {
+  restoreSessionIfPossible();
+  start().catch((err) => {
+    bootAttempts += 1;
+    console.error(`❌ No se pudo iniciar ZENITSU BOT: ${err?.message || err}`);
+    if (bootAttempts >= 5) {
+      console.error('   Demasiados intentos seguidos. Revisa tu conexión a internet.');
+      process.exit(1);
+    }
+    console.log(`⏳ Reintentando en 10s (intento ${bootAttempts + 1} de 5)...`);
+    setTimeout(boot, 10000);
+  });
+}
+boot();

@@ -9,6 +9,7 @@ if command -v termux-wake-lock >/dev/null 2>&1; then
 fi
 
 # Detiene instancias anteriores para no duplicar el bot.
+pm2 delete zenitsu-bot >/dev/null 2>&1
 pkill -f "[n]ode index.js" 2>/dev/null
 sleep 1
 
@@ -18,6 +19,12 @@ export ZENITSU_SUPERVISED=1
 while true; do
   node index.js
   CODE=$?
+  # 78 = WhatsApp cerró la sesión: NO reiniciar (gastaría códigos en bucle).
+  if [ "$CODE" -eq 78 ]; then
+    echo "ZENITSU BOT: la sesión fue cerrada desde WhatsApp."
+    echo "Vincula de nuevo con:  RESET=1 bash pair.sh"
+    break
+  fi
   # Reinicia siempre (incluso si WhatsApp cierra la sesión con código 0).
   # Para detenerlo de verdad: pkill -f "[s]tart.sh" y luego pkill -f "[n]ode index.js".
   echo "ZENITSU BOT se cerró (código $CODE). Reiniciando en 5 segundos..."
