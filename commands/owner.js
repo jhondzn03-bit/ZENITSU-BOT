@@ -1069,14 +1069,65 @@ export default [
     },
   },
   {
+    name: 'grupos',
+    aliases: ['groupslite', 'misgrupos', 'whereami'],
+    category: 'owner',
+    desc: 'Lista todos los grupos donde está el bot, con sus nombres.',
+    usage: 'grupos',
+    owner: true,
+    async execute(ctx) {
+      const map = await ctx.sock.groupFetchAllParticipating();
+      const groups = Object.values(map || {});
+      if (!groups.length) {
+        await ctx.reply('📭 El bot no está en ningún grupo.');
+        return;
+      }
+      groups.sort((a, b) => String(a.subject || '').localeCompare(String(b.subject || '')));
+      const list = groups
+        .map((g, i) => `${i + 1}. *${g.subject || 'Sin nombre'}*\n   👥 ${g.participants?.length || '?'} miembros`)
+        .join('\n');
+      await ctx.reply(
+        `👥 *GRUPOS DEL BOT (${groups.length})*\n\n${list}\n\n` +
+          `💡 Sal de uno con *${ctx.prefix}salir <número>* (ej: *${ctx.prefix}salir ${groups.length > 1 ? 2 : 1}*)`,
+      );
+    },
+  },
+  {
     name: 'leave',
     aliases: ['salir'],
     category: 'owner',
-    desc: 'Hace que el bot salga del grupo actual o de un grupo indicado.',
-    usage: 'leave',
+    desc: 'El bot sale del grupo actual, o del número de la lista .grupos.',
+    usage: 'leave [número de .grupos]',
     owner: true,
-    group: true,
     async execute(ctx) {
+      const selector = String(ctx.args[0] || '').replace(/\D/g, '');
+      // .salir 5 — sale del grupo número 5 de la lista .grupos
+      if (selector) {
+        const map = await ctx.sock.groupFetchAllParticipating();
+        const groups = Object.values(map || {}).sort((a, b) =>
+          String(a.subject || '').localeCompare(String(b.subject || '')),
+        );
+        const index = Number(selector);
+        if (index < 1 || index > groups.length) {
+          await ctx.reply(
+            `❌ Número fuera de la lista (hay ${groups.length} grupos).\n\nRevisa la lista con *${ctx.prefix}grupos*`,
+          );
+          return;
+        }
+        const target = groups[index - 1];
+        await ctx.reply(
+          `👋 Saliendo de *${target.subject}*...\n\n_(También puedes usar *${ctx.prefix}salir* dentro de ese grupo)_`,
+        );
+        await sleep(800);
+        await ctx.sock.groupLeave(target.id);
+        return;
+      }
+      if (!ctx.isGroup) {
+        await ctx.reply(
+          `💡 Dos formas de usarlo:\n\n▸ *${ctx.prefix}salir* — dentro del grupo que quieres dejar\n▸ *${ctx.prefix}salir <n>* — por número de la lista *${ctx.prefix}grupos*`,
+        );
+        return;
+      }
       await ctx.reply('👋 *ZENITSU BOT se despide.*\n\n_Respiración del Trueno, retirada._');
       await sleep(800);
       await ctx.sock.groupLeave(ctx.chat);

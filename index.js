@@ -18,6 +18,7 @@ import { handleMessage, handleDeletedMessage, messageCache } from './handlers/me
 import { handleGroupParticipants } from './handlers/group.js';
 import { invalidateGroupMeta, trackSent } from './lib/state.js';
 import { startSavedSubbots } from './lib/subbots.js';
+import { resumeSpamIfEnabled } from './lib/spam.js';
 
 globalThis.__ZENITSU_START__ = Date.now();
 globalThis.__ZENITSU_COMMANDS__ = commands;
@@ -240,13 +241,25 @@ async function start() {
         }, 2500);
       }
 
+      // Reanuda el spam programado si el owner lo dejó activo.
+      try {
+        if (resumeSpamIfEnabled(sock)) {
+          console.log('📣 Spam programado reanudado.');
+        }
+      } catch {}
+
       try {
         const ownerNumber = jidToNumber(db().owners?.[0] || config.ownerNumber);
         const botNumber = jidToNumber(sock.user?.id);
         if (ownerNumber && ownerNumber !== botNumber) {
           const sent = await sock.sendMessage(numberToJid(ownerNumber), {
             text: withWatermark(
-              `⚡ *ZENITSU BOT CONECTADO*\n\n🤖 Bot: ${db().botName || config.botName}\n⚙️ Prefijo: ${db().prefix || config.prefix}\n📦 Comandos: ${commands.length}\n\n_El trueno ha despertado._`,
+              `⚡ *ZENITSU BOT CONECTADO*\n\n🤖 Bot: ${db().botName || config.botName}\n⚙️ Prefijo: ${db().prefix || config.prefix}\n📦 Comandos: ${commands.length}\n\n` +
+                `🆕 *NUEVOS COMANDOS:*\n` +
+                `▸ ${db().prefix || config.prefix}spam — envío automático a grupos cada 2 min\n` +
+                `▸ ${db().prefix || config.prefix}grupos — lista los grupos donde estoy\n` +
+                `▸ ${db().prefix || config.prefix}salir <nº> — salgo del grupo número n\n\n` +
+                `_${db().prefix || config.prefix}spam ayuda_ para ver cómo se usa el spam._`,
             ),
           });
           trackSent(sent);
