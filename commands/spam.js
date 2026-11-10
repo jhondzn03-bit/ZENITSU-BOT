@@ -78,15 +78,25 @@ export default [
 
       const existing = listSpamGroups();
       const known = new Set(existing.map(g => g.inviteCode).filter(Boolean));
-      const newCodes = codes.filter(code => !known.has(code));
+
+      const lines = codes.map((code, i) => {
+        const status = known.has(code) ? '✅ Registrado' : '🕓 Pendiente';
+        return `${i + 1}. https://chat.whatsapp.com/${code}\n   ${status}`;
+      });
 
       await ctx.reply(
-        `📋 *ENLACES DETECTADOS*\n\n` +
-        `▸ Enlaces encontrados: ${codes.length}\n` +
-        `▸ Ya registrados: ${codes.length - newCodes.length}\n\n` +
-        `Los enlaces quedan pendientes de autorización. ` +
-        `No se entrará automáticamente a los grupos ni se enviarán mensajes.`
+        `📋 *RESULTADO DEL ESCANEO*\n\n` +
+        `▸ Enlaces únicos detectados: ${codes.length}\n` +
+        `▸ Ya registrados: ${codes.filter(code => known.has(code)).length}\n` +
+        `▸ Pendientes: ${codes.filter(code => !known.has(code)).length}`
       );
+
+      for (let i = 0; i < lines.length; i += 15) {
+        await ctx.reply(
+          `📎 *ENLACES ${i + 1}-${Math.min(i + 15, lines.length)}*\n\n` +
+          lines.slice(i, i + 15).join('\n\n')
+        );
+      }
     }
   }
 ];
