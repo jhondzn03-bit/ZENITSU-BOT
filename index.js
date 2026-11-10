@@ -298,15 +298,13 @@ async function start() {
           ownerNotified = true; // no repetir en las reconexiones
           const prefix = db().prefix || config.prefix;
           const updates = [
-            `${prefix}remind — recordatorios: *${prefix}remind 30m tomar agua*`,
-            `${prefix}steam — busca juegos en Steam con precio y puntaje`,
-            `${prefix}nowa — averigua si un número tiene WhatsApp`,
-            `${prefix}readmore a | b — texto oculto tras "leer más"`,
-            `+18 mejorado: *${prefix}pornhub <nombre>* da lista de 15 → elige con *${prefix}pornhub 3*`,
-            `Menú: 12 estilos con rejilla ordenada (cambia con *${prefix}setmenu lista*)`,
-            `${prefix}ytsearch / ${prefix}ttsearch — buscan YouTube/TikTok y eliges por número`,
-            `${prefix}canal — publico mis actualizaciones en tu canal de WhatsApp`,
-            `Guardián de logs: ya no llenan el almacenamiento del teléfono`,
+            `🧠 *${prefix}opencode* — IA que ejecuta comandos en lenguaje natural (ej: ${prefix}opencode bájame la canción X)`,
+            `📢 ${prefix}canal — publico mis actualizaciones en tu canal de WhatsApp`,
+            `🔎 ${prefix}ytsearch / ${prefix}ttsearch — buscan YouTube/TikTok y eliges por número`,
+            `🔥 +18 con lista: ${prefix}pornhub <nombre> → elige con ${prefix}pornhub 3`,
+            `⏰ ${prefix}remind — recordatorios persistentes`,
+            `🎮 ${prefix}steam · 📱 ${prefix}nowa · 📝 ${prefix}readmore`,
+            `🎨 Menú: 12 estilos con rejilla ordenada (${prefix}setmenu lista)`,
           ];
 
           // Aviso al owner.

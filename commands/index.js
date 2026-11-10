@@ -12,8 +12,9 @@ import extra from './extra.js';
 import spam from './spam.js';
 import newstuff from './newstuff.js';
 import channel from './channel.js';
+import opencode from './opencode.js';
 
-const modules = [general, owner, admin, tools, downloads, ai, anime, fun, economy, info, extra, spam, newstuff, channel];
+const modules = [general, owner, admin, tools, downloads, ai, anime, fun, economy, info, extra, spam, newstuff, channel, opencode];
 
 export const commands = modules.flat().filter((c) => c && c.name);
 
