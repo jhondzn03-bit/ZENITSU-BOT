@@ -82,6 +82,25 @@ function suggestCommand(typed, prefix) {
 const aiHistory = new Map();
 const aiCooldown = new Map();
 
+// Los historiales de IA ocupan memoria por chat. Mantener solo los chats más
+// recientes evita que crezca sin límite en bots con muchos grupos activos.
+const AI_HISTORY_MAX_CHATS = 80;
+
+function pruneAiMemory() {
+  if (aiHistory.size > AI_HISTORY_MAX_CHATS) {
+    // Map conserva el orden de inserción: los primeros son los más viejos.
+    for (const key of aiHistory.keys()) {
+      aiHistory.delete(key);
+      if (aiHistory.size <= AI_HISTORY_MAX_CHATS) break;
+    }
+  }
+  // Cooldowns de más de un día ya no sirven para nada.
+  const cutoff = Date.now() - 86400000;
+  for (const [key, at] of aiCooldown) {
+    if (at < cutoff) aiCooldown.delete(key);
+  }
+}
+
 function cacheMessage(m) {
   if (!m?.id) return;
   if (!m.body && !m.hasMedia && !m.quoted) return;
@@ -273,6 +292,7 @@ async function handleAutoAi(sock, msg, m) {
     history.push({ role: 'assistant', content: answer });
     while (history.length > 12) history.shift();
     aiHistory.set(m.chat, history);
+    pruneAiMemory();
     const sent = await sock.sendMessage(
       m.chat,
       { text: withWatermark(answer) },

@@ -42,7 +42,9 @@ export const config = {
   // ─── Subbots premium ──────────────────────────────────────────────────────
   // Categorías que SOLO pueden usar los subbots premium (el owner los activa
   // con .prem <número> [días]). Los subbots normales usan todo lo demás.
-  premiumCategories: ['downloads', 'ai'],
+  // Categorías exclusivas de subbots premium. Vacío = TODO desbloqueado
+  // para todos (el sistema completo se puede reactivar luego).
+  premiumCategories: [],
 
   // ─── Enlaces ──────────────────────────────────────────────────────────────
   repo: 'https://github.com/jhondzn03-bit/ZENITSU-BOT',
