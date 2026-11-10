@@ -38,6 +38,35 @@ import * as utils from '../lib/utils.js';
 
 const require = createRequire(import.meta.url);
 
+// ─── Despedida al salir de un grupo ────────────────────────────────────────
+const ZENITSU_FAREWELL_QUOTES = [
+  'Puede que sea un cobarde, ¡pero daré todo de mí!',
+  'Estoy asustado... pero aunque esté asustado, ¡no me rendiré!',
+  '¡No me digas que rendirse es la respuesta correcta!',
+  'Me esforcé hasta el límite para no perder nada. Me esforcé tanto que sangraba.',
+  'Solo quien se esfuerza hasta el final puede llamarse fuerte.',
+  'Si tienes miedo, corre... pero nunca dejes de avanzar.',
+  '¡Respiración del Trueno, Primera Forma: Trueno Relámpago y Destello!',
+];
+
+// Mensaje que el bot deja en el grupo antes de irse: despedida formal, una
+// frase de Zenitsu al azar y el wa.me del owner por si lo quieren de vuelta.
+function buildFarewell() {
+  const quote = ZENITSU_FAREWELL_QUOTES[Math.floor(Math.random() * ZENITSU_FAREWELL_QUOTES.length)];
+  const ownerNumber = jidToNumber(db().owners?.[0] || config.ownerNumber);
+  return withWatermark(
+    '╭━━━ ⚡ ZENITSU SE DESPIDE ━━━╮\n\n' +
+      '🌩️ Llegó la hora de mi retirada,\n' +
+      'pero el trueno siempre vuelve.\n\n' +
+      `🗞️ _"${quote}"_\n\n` +
+      '👤 ¿Quieres un bot como yo?\n' +
+      '📲 Escríbele a mi creador:\n' +
+      `🔗 https://wa.me/${ownerNumber}\n\n` +
+      '╰━━━━━━━━━━━━━━━━━━━━╯\n\n' +
+      '_🌩️ Respiración del Trueno, Séptima Forma: Trueno Llameante._',
+  );
+}
+
 // Resuelve a qué usuario apunta un comando de subbots. Acepta:
 //   .prem @user        → el mencionado
 //   .prem              (respondiendo a su mensaje) → el citado
@@ -1096,7 +1125,7 @@ export default [
     name: 'leave',
     aliases: ['salir'],
     category: 'owner',
-    desc: 'El bot sale del grupo (y archiva el chat para que no quede en la lista).',
+    desc: 'El bot se despide con una frase de Zenitsu, deja el contacto del owner y sale del grupo.',
     usage: 'leave [número de .grupos]',
     owner: true,
     async execute(ctx) {
@@ -1115,7 +1144,11 @@ export default [
           return;
         }
         const target = groups[index - 1];
-        await ctx.reply(`👋 Saliendo de *${target.subject}*...\n\n_También archivaré el chat._`);
+        await ctx.reply(`👋 Saliendo de *${target.subject}*...\n\n_Dejaré mi despedida en el grupo._`);
+        // La despedida va al GRUPO, no al chat del owner.
+        try {
+          await ctx.sock.sendMessage(target.id, { text: buildFarewell() });
+        } catch {}
         await sleep(800);
         await ctx.sock.groupLeave(target.id);
         // El chat no desaparece solo al salir: se archiva para que no quede
@@ -1132,7 +1165,7 @@ export default [
         return;
       }
       const chat = ctx.chat;
-      await ctx.reply('👋 *ZENITSU BOT se despide.*\n\n_Respiración del Trueno, retirada._');
+      await ctx.reply(buildFarewell());
       await sleep(800);
       await ctx.sock.groupLeave(chat);
       try {
