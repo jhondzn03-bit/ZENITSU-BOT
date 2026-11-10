@@ -20,6 +20,7 @@ import { invalidateGroupMeta, trackSent } from './lib/state.js';
 import { startSavedSubbots } from './lib/subbots.js';
 import { resumeSpamIfEnabled } from './lib/spam.js';
 import { resumeReminders } from './lib/reminders.js';
+import { buildChannelUpdate, channelAutoUpdates, sendToChannel } from './lib/channel.js';
 
 globalThis.__ZENITSU_START__ = Date.now();
 globalThis.__ZENITSU_COMMANDS__ = commands;
@@ -293,26 +294,44 @@ async function start() {
       } catch {}
 
       try {
-        const ownerNumber = jidToNumber(db().owners?.[0] || config.ownerNumber);
-        const botNumber = jidToNumber(sock.user?.id);
-        if (ownerNumber && ownerNumber !== botNumber && !ownerNotified) {
+        if (!ownerNotified) {
           ownerNotified = true; // no repetir en las reconexiones
           const prefix = db().prefix || config.prefix;
-          const sent = await sock.sendMessage(numberToJid(ownerNumber), {
-            text: withWatermark(
-              `⚡ *ZENITSU BOT CONECTADO*\n\n🤖 Bot: ${db().botName || config.botName}\n⚙️ Prefijo: ${prefix}\n📦 Comandos: ${commands.length}\n\n` +
-                `🆕 *ÚLTIMAS ACTUALIZACIONES:*\n` +
-                `▸ ${prefix}remind — recordatorios: *${prefix}remind 30m tomar agua*\n` +
-                `▸ ${prefix}steam — busca juegos en Steam con precio y puntaje\n` +
-                `▸ ${prefix}nowa — averigua si un número tiene WhatsApp\n` +
-                `▸ ${prefix}readmore a | b — texto oculto tras "leer más"\n` +
-                `▸ +18 mejorado: *.pornhub <nombre>* da lista de 15 → elige con *.pornhub 3*\n` +
-                `▸ Menú rediseñado: más bonito y compacto (rejilla de 2 columnas)\n` +
-                `▸ Guardián de logs: ya no llenan el almacenamiento del teléfono\n\n` +
-                `_${prefix}menu para ver el nuevo diseño ⚡_`,
-            ),
-          });
-          trackSent(sent);
+          const updates = [
+            `${prefix}remind — recordatorios: *${prefix}remind 30m tomar agua*`,
+            `${prefix}steam — busca juegos en Steam con precio y puntaje`,
+            `${prefix}nowa — averigua si un número tiene WhatsApp`,
+            `${prefix}readmore a | b — texto oculto tras "leer más"`,
+            `+18 mejorado: *${prefix}pornhub <nombre>* da lista de 15 → elige con *${prefix}pornhub 3*`,
+            `Menú: 12 estilos con rejilla ordenada (cambia con *${prefix}setmenu lista*)`,
+            `${prefix}ytsearch / ${prefix}ttsearch — buscan YouTube/TikTok y eliges por número`,
+            `${prefix}canal — publico mis actualizaciones en tu canal de WhatsApp`,
+            `Guardián de logs: ya no llenan el almacenamiento del teléfono`,
+          ];
+
+          // Aviso al owner.
+          const ownerNumber = jidToNumber(db().owners?.[0] || config.ownerNumber);
+          const botNumber = jidToNumber(sock.user?.id);
+          if (ownerNumber && ownerNumber !== botNumber) {
+            const sent = await sock.sendMessage(numberToJid(ownerNumber), {
+              text: withWatermark(
+                `⚡ *ZENITSU BOT CONECTADO*\n\n🤖 Bot: ${db().botName || config.botName}\n⚙️ Prefijo: ${prefix}\n📦 Comandos: ${commands.length}\n\n` +
+                  `🆕 *ÚLTIMAS ACTUALIZACIONES:*\n` +
+                  updates.map((u) => `▸ ${u}`).join('\n') +
+                  `\n\n_${prefix}menu para ver el nuevo diseño ⚡_`,
+              ),
+            });
+            trackSent(sent);
+          }
+
+          // Publicación en el canal del bot (si está activado).
+          if (channelAutoUpdates()) {
+            const posted = await sendToChannel(
+              sock,
+              buildChannelUpdate({ prefix, totalCommands: commands.length, updates }),
+            );
+            if (posted) console.log('📢 Actualización publicada en el canal.');
+          }
         }
       } catch {}
     }

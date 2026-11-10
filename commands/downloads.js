@@ -17,6 +17,7 @@ import {
   searchYouTube,
   spotifyDownload,
   tiktokDownload,
+  tiktokSearch,
   twitterDownload,
   youtubeDownload,
 } from '../lib/api.js';
@@ -122,6 +123,28 @@ function getUrlOrText(ctx) {
   return extractUrl(ctx.text) || (isUrl(ctx.args[0]) ? ctx.args[0] : '');
 }
 
+// ─── Búsquedas con lista seleccionable (.ytsearch / .ttsearch) ────────────
+// Igual que el buscador +18: ".ytsearch gato" da una lista numerada y
+// ".ytsearch 3" descarga el resultado 3. Se recuerda por chat 15 minutos.
+const SEARCH_TTL = 15 * 60 * 1000;
+const chatSearches = new Map(); // chat → { kind, query, results, at }
+
+function rememberSearch(chat, kind, query, results) {
+  const now = Date.now();
+  for (const [key, value] of chatSearches) {
+    if (now - value.at > SEARCH_TTL) chatSearches.delete(key);
+  }
+  if (chatSearches.size > 60) chatSearches.delete(chatSearches.keys().next().value);
+  chatSearches.set(chat, { kind, query, results, at: now });
+}
+
+function getLastSearch(chat, kind) {
+  const last = chatSearches.get(chat);
+  if (!last || last.kind !== kind) return null;
+  if (Date.now() - last.at > SEARCH_TTL) return null;
+  return last;
+}
+
 export default [
   {
     name: 'play',
@@ -201,24 +224,117 @@ export default [
   },
   {
     name: 'ytsearch',
-    aliases: ['yts', 'buscarvideo'],
+    aliases: ['yts', 'buscarvideo', 'ytbuscar'],
     category: 'downloads',
-    desc: 'Busca videos en YouTube.',
-    usage: 'ytsearch <búsqueda>',
+    desc: 'Busca en YouTube: lista numerada, elige con .ytsearch <número>.',
+    usage: 'ytsearch <búsqueda | número>',
     async execute(ctx) {
-      const query = ctx.text.trim();
-      if (!query) {
-        await ctx.reply(`💡 Uso: *${ctx.prefix}ytsearch* Demon Slayer opening`);
+      const arg = ctx.text.trim();
+
+      // Selector: .ytsearch 3 → descarga el resultado 3 de la última lista.
+      if (/^\d{1,2}$/.test(arg)) {
+        const last = getLastSearch(ctx.chat, 'youtube');
+        if (!last) {
+          await ctx.reply(
+            `❌ No hay una lista reciente de YouTube aquí.\n\n_Busca primero:_ *${ctx.prefix}ytsearch <nombre>*`,
+          );
+          return;
+        }
+        const index = Number(arg);
+        if (index < 1 || index > last.results.length) {
+          await ctx.reply(
+            `❌ La lista tiene ${last.results.length} resultados (1 a ${last.results.length}).\n\n_Revisa con_ *${ctx.prefix}ytsearch ${last.query}*`,
+          );
+          return;
+        }
+        const chosen = last.results[index - 1];
+        await ctx.reply(
+          `🎬 Descargando el resultado ${index}/${last.results.length}:\n*${truncate(chosen.title, 80)}*\n\n_Espera un momento..._`,
+        );
+        const r = await youtubeDownload(chosen.url, 'video');
+        await sendMediaUrl(
+          ctx,
+          r.urls[0],
+          `🎬 *${truncate(chosen.title, 200)}*\n${chosen.author ? `👤 ${chosen.author}\n` : ''}${chosen.duration ? `⏱️ ${chosen.duration}\n` : ''}🔗 ${chosen.url}`,
+          { kind: 'video' },
+        );
         return;
       }
-      const results = await searchYouTube(query, 5);
+
+      if (!arg) {
+        await ctx.reply(
+          `🔎 *YouTube Search*\n\n▸ *${ctx.prefix}ytsearch* Demon Slayer op\n_→ lista con 10 resultados_\n▸ *${ctx.prefix}ytsearch 3*\n_→ descarga el resultado 3 de la lista_`,
+        );
+        return;
+      }
+      const results = await searchYouTube(arg, 10);
+      rememberSearch(ctx.chat, 'youtube', arg, results);
       const list = results
         .map(
           (r, i) =>
-            `${i + 1}. *${truncate(r.title, 80)}*\n   👤 ${r.author || '?'}${r.duration ? ` · ⏱️ ${r.duration}` : ''}\n   🔗 ${r.url}`,
+            `${i + 1}. *${truncate(r.title, 70)}*\n   👤 ${truncate(r.author || '?', 30)}${r.duration ? ` · ⏱️ ${r.duration}` : ''}`,
         )
-        .join('\n\n');
-      await ctx.reply(`🔎 *Resultados para:* ${query}\n\n${list}`);
+        .join('\n');
+      await ctx.reply(
+        `🔎 *YOUTUBE — "${arg}"*\n\n${list}\n\n` +
+          `💡 Descarga uno con *${ctx.prefix}ytsearch <número>*\n_Vale audio: ${ctx.prefix}play <nombre> · la lista expira en 15 min_`,
+      );
+    },
+  },
+  {
+    name: 'ttsearch',
+    aliases: ['tiktoksearch', 'tiktokbuscar', 'ttbuscar', 'buscartiktok'],
+    category: 'downloads',
+    desc: 'Busca videos de TikTok: lista numerada, elige con .ttsearch <número>.',
+    usage: 'ttsearch <búsqueda | número>',
+    async execute(ctx) {
+      const arg = ctx.text.trim();
+
+      // Selector: .ttsearch 3 → descarga el resultado 3 de la última lista.
+      if (/^\d{1,2}$/.test(arg)) {
+        const last = getLastSearch(ctx.chat, 'tiktok');
+        if (!last) {
+          await ctx.reply(
+            `❌ No hay una lista reciente de TikTok aquí.\n\n_Busca primero:_ *${ctx.prefix}ttsearch <nombre>*`,
+          );
+          return;
+        }
+        const index = Number(arg);
+        if (index < 1 || index > last.results.length) {
+          await ctx.reply(
+            `❌ La lista tiene ${last.results.length} resultados (1 a ${last.results.length}).\n\n_Revisa con_ *${ctx.prefix}ttsearch ${last.query}*`,
+          );
+          return;
+        }
+        const chosen = last.results[index - 1];
+        await ctx.reply(
+          `🎵 Descargando el resultado ${index}/${last.results.length}:\n*${truncate(chosen.title, 80)}*\n\n_Espera un momento..._`,
+        );
+        const r = await tiktokDownload(chosen.url);
+        const caption = `🎵 *${truncate(r.title || chosen.title, 200)}*\n${r.author ? `👤 ${r.author}\n` : ''}🔗 ${chosen.url}`;
+        if (r.images?.length) {
+          await sendMany(ctx, r.images, `📸 ${caption}`, { kind: 'image' });
+        } else {
+          await sendMediaUrl(ctx, r.video, caption, { kind: 'video' });
+        }
+        return;
+      }
+
+      if (!arg) {
+        await ctx.reply(
+          `🔎 *TikTok Search*\n\n▸ *${ctx.prefix}ttsearch* anime edit\n_→ lista con 10 resultados_\n▸ *${ctx.prefix}ttsearch 3*\n_→ descarga el resultado 3 (sin marca de agua)_`,
+        );
+        return;
+      }
+      const results = await tiktokSearch(arg, 10);
+      rememberSearch(ctx.chat, 'tiktok', arg, results);
+      const list = results
+        .map((r, i) => `${i + 1}. ${truncate(r.title, 75)}`)
+        .join('\n');
+      await ctx.reply(
+        `🔎 *TIKTOK — "${arg}"*\n\n${list}\n\n` +
+          `💡 Descarga uno con *${ctx.prefix}ttsearch <número>* (sin marca de agua)\n_La lista expira en 15 minutos_`,
+      );
     },
   },
   {

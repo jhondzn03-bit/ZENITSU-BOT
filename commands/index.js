@@ -11,8 +11,9 @@ import info from './info.js';
 import extra from './extra.js';
 import spam from './spam.js';
 import newstuff from './newstuff.js';
+import channel from './channel.js';
 
-const modules = [general, owner, admin, tools, downloads, ai, anime, fun, economy, info, extra, spam, newstuff];
+const modules = [general, owner, admin, tools, downloads, ai, anime, fun, economy, info, extra, spam, newstuff, channel];
 
 export const commands = modules.flat().filter((c) => c && c.name);
 
