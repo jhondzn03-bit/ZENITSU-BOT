@@ -1096,7 +1096,7 @@ export default [
     name: 'leave',
     aliases: ['salir'],
     category: 'owner',
-    desc: 'El bot sale del grupo actual, o del número de la lista .grupos.',
+    desc: 'El bot sale del grupo (y archiva el chat para que no quede en la lista).',
     usage: 'leave [número de .grupos]',
     owner: true,
     async execute(ctx) {
@@ -1115,11 +1115,14 @@ export default [
           return;
         }
         const target = groups[index - 1];
-        await ctx.reply(
-          `👋 Saliendo de *${target.subject}*...\n\n_(También puedes usar *${ctx.prefix}salir* dentro de ese grupo)_`,
-        );
+        await ctx.reply(`👋 Saliendo de *${target.subject}*...\n\n_También archivaré el chat._`);
         await sleep(800);
         await ctx.sock.groupLeave(target.id);
+        // El chat no desaparece solo al salir: se archiva para que no quede
+        // como fantasma en la lista de conversaciones del bot.
+        try {
+          await ctx.sock.chatModify({ archive: true, lastMessages: [] }, target.id);
+        } catch {}
         return;
       }
       if (!ctx.isGroup) {
@@ -1128,9 +1131,13 @@ export default [
         );
         return;
       }
+      const chat = ctx.chat;
       await ctx.reply('👋 *ZENITSU BOT se despide.*\n\n_Respiración del Trueno, retirada._');
       await sleep(800);
-      await ctx.sock.groupLeave(ctx.chat);
+      await ctx.sock.groupLeave(chat);
+      try {
+        await ctx.sock.chatModify({ archive: true, lastMessages: [] }, chat);
+      } catch {}
     },
   },
   {

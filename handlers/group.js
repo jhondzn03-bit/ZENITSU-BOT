@@ -1,5 +1,5 @@
 import { config } from '../config.js';
-import { db, getGroup } from '../lib/db.js';
+import { db, getGroup, save } from '../lib/db.js';
 import { jidToNumber, withWatermark } from '../lib/utils.js';
 import { getGroupMetadata, invalidateGroupMeta, trackSent } from '../lib/state.js';
 
@@ -59,7 +59,23 @@ export async function handleGroupParticipants(sock, update) {
     }
 
     if (action === 'remove') {
-      if (isBot) continue;
+      if (isBot) {
+        // Me echaron del grupo: archiva el chat para que no quede como
+        // fantasma en la lista de conversaciones del bot.
+        try {
+          await sock.chatModify({ archive: true, lastMessages: [] }, id);
+        } catch {}
+        // Si estaba en la lista del spam programado, se quita solo:
+        // el envío fallaría igual en cada ciclo.
+        try {
+          const dbData = db();
+          if (Array.isArray(dbData.spamGroups) && dbData.spamGroups.some((gr) => gr.jid === id)) {
+            dbData.spamGroups = dbData.spamGroups.filter((gr) => gr.jid !== id);
+            save();
+          }
+        } catch {}
+        continue;
+      }
       if (!g.goodbye) continue;
       const template =
         g.goodbyeText ||
