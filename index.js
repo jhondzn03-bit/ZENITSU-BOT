@@ -33,6 +33,9 @@ let lastPairingAt = 0;
 let reconnecting = false;
 let loggedOut = false;
 let subbotsStarted = false;
+// El aviso al owner (comandos nuevos + actualizaciones) se envía UNA sola
+// vez por arranque del bot — no en cada reconexión de WhatsApp.
+let ownerNotified = false;
 
 function banner() {
   const store = db();
@@ -251,15 +254,19 @@ async function start() {
       try {
         const ownerNumber = jidToNumber(db().owners?.[0] || config.ownerNumber);
         const botNumber = jidToNumber(sock.user?.id);
-        if (ownerNumber && ownerNumber !== botNumber) {
+        if (ownerNumber && ownerNumber !== botNumber && !ownerNotified) {
+          ownerNotified = true; // no repetir en las reconexiones
+          const prefix = db().prefix || config.prefix;
           const sent = await sock.sendMessage(numberToJid(ownerNumber), {
             text: withWatermark(
-              `⚡ *ZENITSU BOT CONECTADO*\n\n🤖 Bot: ${db().botName || config.botName}\n⚙️ Prefijo: ${db().prefix || config.prefix}\n📦 Comandos: ${commands.length}\n\n` +
-                `🆕 *NUEVOS COMANDOS:*\n` +
-                `▸ ${db().prefix || config.prefix}spam — envío automático a grupos cada 2 min\n` +
-                `▸ ${db().prefix || config.prefix}grupos — lista los grupos donde estoy\n` +
-                `▸ ${db().prefix || config.prefix}salir <nº> — salgo del grupo número n\n\n` +
-                `_${db().prefix || config.prefix}spam ayuda_ para ver cómo se usa el spam._`,
+              `⚡ *ZENITSU BOT CONECTADO*\n\n🤖 Bot: ${db().botName || config.botName}\n⚙️ Prefijo: ${prefix}\n📦 Comandos: ${commands.length}\n\n` +
+                `🆕 *ÚLTIMAS ACTUALIZACIONES:*\n` +
+                `▸ ${prefix}spam — envío automático a grupos cada 2 min\n` +
+                `▸ ${prefix}grupos — lista los grupos donde estoy\n` +
+                `▸ ${prefix}salir <nº> — salgo del grupo número n\n` +
+                `▸ .salir ahora deja una despedida con frase de Zenitsu y tu wa.me\n` +
+                `▸ Al salir de un grupo, el chat se archiva (sin chats fantasma)\n\n` +
+                `_${prefix}menu para ver todo · ${prefix}spam ayuda para el spam_`,
             ),
           });
           trackSent(sent);
