@@ -94,7 +94,7 @@ export default [
   },
   {
     name: 'imagine',
-    aliases: ['img', 'draw', 'dibujar', 'flux', 'imagen'],
+    aliases: ['draw', 'dibujar', 'flux', 'imaginar', 'iagen'],
     category: 'ai',
     desc: 'Genera una imagen con inteligencia artificial.',
     usage: 'imagine <descripción>',

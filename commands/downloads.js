@@ -32,21 +32,27 @@ function kindFromUrl(url) {
 
 async function sendMediaUrl(ctx, url, caption = '', options = {}) {
   const kind = options.kind || kindFromUrl(url);
+  // Las URLs de googlevideo van firmadas para ESTA IP: los servidores de
+  // WhatsApp las descargan desde otra IP y reciben 403. Por eso los archivos
+  // de YouTube se envían siempre como buffer (descarga local + subida).
+  const mustBuffer = /googlevideo\.com/i.test(String(url));
   if (kind === 'audio') {
-    try {
-      const sent = await ctx.sock.sendMessage(
-        ctx.chat,
-        {
-          audio: { url },
-          mimetype: options.mimetype || 'audio/mp4',
-          fileName: options.fileName || 'zenitsu.m4a',
-          ptt: false,
-        },
-        { quoted: ctx.msg },
-      );
-      trackSent(sent);
-      return;
-    } catch {}
+    if (!mustBuffer) {
+      try {
+        const sent = await ctx.sock.sendMessage(
+          ctx.chat,
+          {
+            audio: { url },
+            mimetype: options.mimetype || 'audio/mp4',
+            fileName: options.fileName || 'zenitsu.m4a',
+            ptt: false,
+          },
+          { quoted: ctx.msg },
+        );
+        trackSent(sent);
+        return;
+      } catch {}
+    }
     const buffer = await fetchBuffer(url);
     const sent = await ctx.sock.sendMessage(
       ctx.chat,
@@ -58,10 +64,12 @@ async function sendMediaUrl(ctx, url, caption = '', options = {}) {
   }
 
   if (kind === 'video') {
-    try {
-      await ctx.send({ video: { url }, caption, mimetype: 'video/mp4' });
-      return;
-    } catch {}
+    if (!mustBuffer) {
+      try {
+        await ctx.send({ video: { url }, caption, mimetype: 'video/mp4' });
+        return;
+      } catch {}
+    }
     const buffer = await fetchBuffer(url);
     await ctx.send({ video: buffer, caption, mimetype: 'video/mp4' });
     return;

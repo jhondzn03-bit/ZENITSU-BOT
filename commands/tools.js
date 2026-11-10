@@ -31,6 +31,8 @@ import {
   shortenUrl,
   translateText,
   ttsAudio,
+  webSearch,
+  imageSearch,
 } from '../lib/api.js';
 import { mediaToAudio, mediaToSticker, stickerToImage } from '../lib/sticker.js';
 import { trackSent } from '../lib/state.js';
@@ -261,6 +263,52 @@ export default [
         } catch {}
       }
       await ctx.reply(text);
+    },
+  },
+  {
+    name: 'google',
+    aliases: ['buscarweb', 'websearch', 'buscador'],
+    category: 'tools',
+    desc: 'Busca en la web y muestra los mejores resultados.',
+    usage: 'google <búsqueda>',
+    async execute(ctx) {
+      const query = ctx.text.trim();
+      if (!query) {
+        await ctx.reply(`💡 Uso: *${ctx.prefix}google* mejores animes 2026`);
+        return;
+      }
+      const results = await webSearch(query, 6);
+      const list = results
+        .map(
+          (r, i) =>
+            `${i + 1}. *${truncate(r.title, 90)}*\n` +
+            (r.snippet ? `   _${truncate(r.snippet, 130)}_\n` : '') +
+            `   🔗 ${r.url}`,
+        )
+        .join('\n\n');
+      await ctx.reply(`🔎 *Resultados para:* ${truncate(query, 120)}\n\n${list}`);
+    },
+  },
+  {
+    name: 'img',
+    aliases: ['imagen', 'imagine-search', 'searchimg', 'foto'],
+    category: 'tools',
+    desc: 'Busca y envía una imagen real de lo que pidas.',
+    usage: 'img <búsqueda>',
+    async execute(ctx) {
+      const query = ctx.text.trim();
+      if (!query) {
+        await ctx.reply(`💡 Uso: *${ctx.prefix}img* paisaje de montaña`);
+        return;
+      }
+      await ctx.react('🖼️');
+      const results = await imageSearch(query, 4);
+      const sent = await ctx.sock.sendMessage(
+        ctx.chat,
+        { image: { url: results[0].url }, caption: `🖼️ *${truncate(query, 100)}*` },
+        { quoted: ctx.msg },
+      );
+      trackSent(sent);
     },
   },
   {

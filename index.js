@@ -298,7 +298,9 @@ async function start() {
   sock.ev.on('messages.update', async (updates) => {
     for (const item of updates) {
       if (item?.update?.message === null) {
-        handleDeletedMessage(sock, item.key).catch(() => {});
+        // handleDeletedMessage puede devolver undefined (sin anti-delete o sin
+        // caché): Promise.resolve evita el TypeError "reading 'catch'".
+        Promise.resolve(handleDeletedMessage(sock, item.key)).catch(() => {});
       }
     }
   });

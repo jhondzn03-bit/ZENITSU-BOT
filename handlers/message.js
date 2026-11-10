@@ -22,6 +22,63 @@ import { aiText } from '../lib/api.js';
 
 const messageCache = new Map();
 const spamMap = new Map();
+
+/* ─────────── "¿quisiste decir?" — comandos mal escritos ─────────── */
+
+// Distancia de Levenshtein (cuántos caracteres hay que cambiar para que dos
+// palabras sean iguales). Versión compacta con dos filas.
+function editDistance(a, b) {
+  a = a.toLowerCase();
+  b = b.toLowerCase();
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(
+        prev[j] + 1, // borrar
+        cur[j - 1] + 1, // insertar
+        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1), // cambiar
+      );
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+// Busca el comando más parecido al que el usuario escribió mal.
+// Prioriza errores de tipeo (distancia pequeña), luego "por dónde empieza"
+// y "lo contiene". Solo sugiere si hay UN candidato claro.
+function suggestCommand(typed, prefix) {
+  const q = typed.toLowerCase();
+  if (q.length < 3) return null;
+  const scored = [];
+  const seen = new Set();
+  for (const cmd of commands) {
+    // Cada comando cuenta una sola vez (sus alias no participan del concurso,
+    // o terminaríamos compitiendo "sticker" contra "sticker").
+    const canonical = cmd.name.toLowerCase();
+    if (seen.has(canonical)) continue;
+    seen.add(canonical);
+    let score = Infinity;
+    const d = editDistance(q, canonical);
+    // Se permite fallar ~1 tecla por cada 4 letras del comando real.
+    const tolerance = Math.max(canonical.length >= 4 ? 1 : 0, Math.floor(canonical.length / 4));
+    if (d <= tolerance) score = d * 2;
+    else if (canonical.startsWith(q) && q.length >= 4) score = 10;
+    else if (q.length >= 5 && canonical.includes(q)) score = 20;
+    if (score < Infinity) scored.push({ score, name: canonical });
+  }
+  if (!scored.length) return null;
+  scored.sort((a, b) => a.score - b.score || a.name.length - b.name.length);
+  // Los empates perfectos muestran dos opciones; el resto, solo la mejor.
+  if (scored.length > 1 && scored[1].score === scored[0].score) {
+    return `${prefix}${scored[0].name} *o* ${prefix}${scored[1].name}`;
+  }
+  return `${prefix}${scored[0].name}`;
+}
 const aiHistory = new Map();
 const aiCooldown = new Map();
 
@@ -394,7 +451,20 @@ export async function handleMessage(sock, msg) {
   const [rawCommand, ...args] = raw.split(/\s+/);
   const commandName = rawCommand.toLowerCase();
   const cmd = commandMap.get(commandName);
-  if (!cmd) return;
+  if (!cmd) {
+    // ¿Quisiste decir...? — solo si el comando tipeado se parece a uno real,
+    // para no responder ante cualquier texto que empiece con el prefijo.
+    const suggestion = suggestCommand(commandName, prefix);
+    if (suggestion) {
+      await ctx.reply(
+        `❓ *No conozco ese comando*\n\n` +
+          `▸ Escribiste: *${prefix}${commandName}*\n` +
+          `✨ ¿Quisiste decir...? *${suggestion}*\n\n` +
+          `💡 Escribe *${prefix}menu* para ver todo lo que sé hacer ⚡`,
+      );
+    }
+    return;
+  }
 
   ctx.command = commandName;
   ctx.args = args;
