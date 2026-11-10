@@ -30,13 +30,56 @@ import {
   truncate,
   withWatermark,
 } from '../lib/utils.js';
-import { getTargetJid } from '../lib/targets.js';
+import { getTargetJid, findParticipant } from '../lib/targets.js';
 import { gifToMp4 } from '../lib/sticker.js';
 import { DEFAULT_MENU_STYLE, MENU_STYLES } from '../lib/menu.js';
 import * as api from '../lib/api.js';
 import * as utils from '../lib/utils.js';
 
 const require = createRequire(import.meta.url);
+
+// Resuelve a qué usuario apunta un comando de subbots. Acepta:
+//   .prem @user        → el mencionado
+//   .prem              (respondiendo a su mensaje) → el citado
+//   .prem 50312345678  → el número escrito
+// Siempre devuelve UN SOLO número: el resto de usuarios no se toca.
+async function resolveSubbotTarget(ctx) {
+  // 1. Mención: .prem @user
+  if (ctx.mentioned?.length) {
+    let jid = ctx.mentioned[0];
+    let num = jidToNumber(jid);
+    // En grupos la mención puede llegar como LID: resuelve el número real.
+    if (jid?.endsWith('@lid') && ctx.isGroup && ctx.getGroupMeta) {
+      try {
+        const meta = await ctx.getGroupMeta();
+        const p = findParticipant(meta, jid);
+        const real = p?.phoneNumber || p?.id;
+        if (real) num = jidToNumber(real);
+      } catch {}
+    }
+    if (num.length >= 7 && num.length <= 15) return { number: num, via: 'mención' };
+  }
+  // 2. Respuesta: .prem respondiendo al mensaje del usuario
+  if (ctx.quotedSender) {
+    const num = jidToNumber(ctx.quotedSender);
+    if (num.length >= 7 && num.length <= 15) return { number: num, via: 'respuesta' };
+  }
+  // 3. Número directo: .prem 50312345678
+  const arg = String(ctx.args[0] || '').replace(/\D/g, '');
+  if (arg.length >= 7 && arg.length <= 15) return { number: arg, via: 'número' };
+  return null;
+}
+
+// Busca los días en los argumentos (.prem @user 30). Ignora el número largo
+// del teléfono; 0 o ausente significa permanente.
+function parseDays(args = []) {
+  for (const a of args) {
+    const d = String(a || '').replace(/\D/g, '');
+    if (d && d.length <= 3 && Number(d) > 0) return Number(d);
+  }
+  return 0;
+}
+
 
 function restartProcess() {
   saveNow();
@@ -295,6 +338,39 @@ export default [
     },
   },
   {
+    name: 'setprimary',
+    aliases: ['setprincipal', 'botprincipal', 'primary'],
+    category: 'owner',
+    desc: 'Marca un subbot como BOT PRINCIPAL: por @mención, respuesta o número.',
+    usage: 'setprimary <@user|número>',
+    owner: true,
+    async execute(ctx) {
+      const target = await resolveSubbotTarget(ctx);
+      if (!target) {
+        await ctx.reply(
+          `💡 *Uso:*\n${ctx.prefix}setprimary @user\n${ctx.prefix}setprimary 503XXXXXXXX\n${ctx.prefix}setprimary (respondiendo a su mensaje)`,
+        );
+        return;
+      }
+      const num = target.number;
+      const { setSubbotPrimary, isSubbotRegistered } = await import('../lib/subbots.js');
+      const record = setSubbotPrimary(num);
+      if (!isSubbotRegistered(num)) {
+        await ctx.reply(
+          `👑 *+${num}* ahora es el BOT PRINCIPAL de los subbots.\n\n⚠️ Aún no está vinculado: usa *${ctx.prefix}code ${num}* para vincularlo.\n\n` +
+            `Tendrá: ✅ todo desbloqueado (descargas, IA) y 🔇 no se puede silenciar.`,
+        );
+        return;
+      }
+      await ctx.reply(
+        `👑 *BOT PRINCIPAL ESTABLECIDO*\n\n🤖 Subbot: *${record.name}*\n📱 +${record.number}\n\n` +
+          `✅ Todo desbloqueado (incluye descargas e IA)\n` +
+          `🔇 No se silencia con *${ctx.prefix}silenciarsubbs*\n` +
+          `⚡ Solo puede haber un bot principal a la vez.\n▸ Detectado por ${target.via}`,
+      );
+    },
+  },
+  {
     name: 'setowner',
     aliases: ['ownerprincipal'],
     category: 'owner',
@@ -479,8 +555,10 @@ export default [
         );
         return;
       }
-      const name =
+      const customName =
         raw.length >= 7 ? ctx.args.slice(1).join(' ').trim() : ctx.args.join(' ').trim();
+      // Nombre limpio por defecto: Zenitsu + últimos 2 dígitos (ej: Zenitsu62).
+      const autoName = `Zenitsu${number.slice(-2)}`;
       const { addSubbot, startSubbot, isSubbotRunning } = await import('../lib/subbots.js');
 
       if (isSubbotRunning(number)) {
@@ -488,7 +566,7 @@ export default [
         return;
       }
 
-      const record = addSubbot(number, name);
+      const record = addSubbot(number, customName || autoName);
 
       try {
         const result = await startSubbot(number);
@@ -511,8 +589,9 @@ export default [
         ]);
 
         if (outcome.code) {
+          // Texto plano, sin botones: el código es aleatorio y caduca en ~60s.
           await ctx.reply(
-            `🔗 *VINCULA EL SUBBOT*\n\n📱 Número: *+${number}*\n🔢 Código: *${outcome.code}*\n\n1. Abre WhatsApp en el *+${number}*.\n2. Dispositivos vinculados → Vincular dispositivo.\n3. Elige “Vincular con número de teléfono”.\n4. Escribe: *${outcome.code}*\n\n⚠️ El código caduca en ~60 segundos.`,
+            `🔗 *VINCULA TU SUBBOT*\n\n📱 Número: *+${number}*\n🔢 Código: *${outcome.code}*\n\n1. Abre WhatsApp en el *+${number}*.\n2. Dispositivos vinculados → Vincular dispositivo.\n3. Elige «Vincular con número de teléfono».\n4. Escribe el código: *${outcome.code}*\n\n⚠️ Caduca en ~60 segundos.`,
           );
         } else if (outcome.timeout) {
           await ctx.reply(
@@ -550,42 +629,200 @@ export default [
       }
       const runningCount = list.filter((s) => isSubbotRunning(s.number)).length;
       const registeredCount = list.filter((s) => isSubbotRegistered(s.number)).length;
+      const premiumCount = list.filter(
+        (s) => s.premium && (!s.premiumUntil || s.premiumUntil > Date.now()),
+      ).length;
       const lines = list.map((s) => {
         const running = isSubbotRunning(s.number);
         const linked = isSubbotRegistered(s.number);
-        return `${running ? '🟢' : '⚪'} *${s.name}* · +${s.number}${linked ? ' ✅' : ' ⏳'}${s.jid ? `\n   🆔 ${s.jid}` : ''}`;
+        const activo = s.premium && (!s.premiumUntil || s.premiumUntil > Date.now());
+        const restante =
+          activo && s.premiumUntil
+            ? ` · ⏳ ${Math.max(1, Math.ceil((s.premiumUntil - Date.now()) / 86400000))}d`
+            : '';
+        return `${s.primary ? '👑' : running ? (s.muted ? '🔇' : '🟢') : '⚪'} *${s.name}* · +${s.number}${s.primary ? ' (PRINCIPAL)' : ''}${activo ? ` 💎${restante}` : ''}${linked ? ' ✅' : ' ⏳'}${s.jid ? `\n   🆔 ${s.jid}` : ''}`;
       });
       await ctx.reply(
         `🤖 *BOTS REGISTRADOS*\n\n` +
           `📊 Total: *${list.length}*\n` +
           `🟢 Activos: *${runningCount}*\n` +
-          `✅ Vinculados: *${registeredCount}*\n\n` +
+          `✅ Vinculados: *${registeredCount}*\n` +
+          `💎 Premium: *${premiumCount}*\n\n` +
           `${lines.join('\n\n')}\n\n` +
-          `🟢 Activo · ⚪ Detenido · ✅ Vinculado · ⏳ Sin vincular`,
+          `👑 Principal · 🟢 Activo · 🔇 Silenciado · ⚪ Detenido · ✅ Vinculado · ⏳ Sin vincular · 💎 Premium\n\n` +
+          `💡 Da premium con *${ctx.prefix}prem <número> [días]* · Silencia a todos con *${ctx.prefix}silenciarsubbs* · Elige el bot principal con *${ctx.prefix}setprimary <número>*`,
       );
+    },
+  },
+  {
+    name: 'prem',
+    aliases: ['setprem', 'darprem', 'premium'],
+    category: 'owner',
+    desc: 'Da PREMIUM a UN subbot: por @mención, respondiendo a su mensaje o por número. Solo a ese.',
+    usage: 'prem <@user|número> [días]',
+    owner: true,
+    async execute(ctx) {
+      const target = await resolveSubbotTarget(ctx);
+      if (!target) {
+        await ctx.reply(
+          `💡 *Uso — elige una opción (solo afecta a ese usuario):*\n\n` +
+            `${ctx.prefix}prem @user\n${ctx.prefix}prem 503XXXXXXXX\n${ctx.prefix}prem 30        (respondiendo a su mensaje)\n\n` +
+            `Con días: *${ctx.prefix}prem @user 30*`,
+        );
+        return;
+      }
+      const days = parseDays(ctx.args);
+      const { setSubbotPremium } = await import('../lib/subbots.js');
+      const record = setSubbotPremium(target.number, days);
+      const vigencia = days > 0 ? `*${days}* día(s)` : 'permanente ♾️';
+      await ctx.reply(
+        `💎 *PREMIUM ACTIVADO*\n\n🤖 Subbot: *${record.name}*\n📱 +${record.number}\n⏳ Duración: ${vigencia}\n\nDesbloqueado: 📥 descargas y 🤖 IA.\n▸ Detectado por ${target.via} (nadie más recibió premium).`,
+      );
+    },
+  },
+  {
+    name: 'unprem',
+    aliases: ['quitaprem', 'noprem', 'removerprem'],
+    category: 'owner',
+    desc: 'Quita el premium de UN subbot: por @mención, respuesta o número.',
+    usage: 'unprem <@user|número>',
+    owner: true,
+    async execute(ctx) {
+      const target = await resolveSubbotTarget(ctx);
+      if (!target) {
+        await ctx.reply(
+          `💡 *Uso:*\n${ctx.prefix}unprem @user\n${ctx.prefix}unprem 503XXXXXXXX\n${ctx.prefix}unprem (respondiendo a su mensaje)`,
+        );
+        return;
+      }
+      const { unsetSubbotPremium } = await import('../lib/subbots.js');
+      const record = unsetSubbotPremium(target.number);
+      if (!record) {
+        await ctx.reply(`❌ Ese subbot no está registrado.\n\nCrea uno con *${ctx.prefix}code ${target.number}*`);
+        return;
+      }
+      await ctx.reply(
+        `🆓 *PREMIUM DESACTIVADO*\n\n🤖 Subbot: *${record.name}*\n📱 +${record.number}\n\nVuelve a ser *normal*: sin descargas ni IA.`,
+      );
+    },
+  },
+  {
+    name: 'silenciarsubbs',
+    aliases: ['silenciarsub', 'silenciar', 'mutesubbot', 'mutesub', 'mutebot', 'muteall'],
+    category: 'owner',
+    desc: 'Silencia TODOS los subbots a la vez (o solo uno si pasas un número). El owner conserva el control.',
+    usage: 'silenciarsubbs [número]',
+    owner: true,
+    async execute(ctx) {
+      const target = await resolveSubbotTarget(ctx);
+      const { setSubbotMuted, listSubbots } = await import('../lib/subbots.js');
+      const list = listSubbots();
+
+      if (!list.length) {
+        await ctx.reply(`🤖 No hay subbots registrados.\n\nCrea uno con *${ctx.prefix}code*`);
+        return;
+      }
+
+      if (target) {
+        const record = setSubbotMuted(target.number, true);
+        if (!record) {
+          await ctx.reply(`❌ Ese subbot no está registrado.\n\nCrea uno con *${ctx.prefix}code ${target.number}*`);
+          return;
+        }
+        if (record.primary) {
+          // El bot principal no se silencia: revertimos el cambio.
+          setSubbotMuted(target.number, false);
+          await ctx.reply(
+            `👑 *${record.name}* (+${record.number}) es el BOT PRINCIPAL: no se puede silenciar.\n\n Usa *${ctx.prefix}setprimary <otro-número>* si quieres cambiar el principal.`,
+          );
+          return;
+        }
+        await ctx.reply(
+          `🔇 *SUBBOT SILENCIADO*\n\n🤖 Subbot: *${record.name}*\n📱 +${record.number}\n\nIgnora a todos menos a ti.\nReactiva con *${ctx.prefix}activarsubbs ${record.number}*`,
+        );
+        return;
+      }
+
+      let count = 0;
+      let primarySkipped = null;
+      for (const s of list) {
+        // El bot principal (.setprimary) nunca se silencia.
+        if (s.primary) {
+          primarySkipped = s;
+          continue;
+        }
+        setSubbotMuted(s.number, true);
+        count += 1;
+      }
+      await ctx.reply(
+        `🔇 *SUBBOTS SILENCIADOS (${count})*\n\n` +
+          `🤖 Todos los subbots ignoran los mensajes de los usuarios.\n\n` +
+          `${primarySkipped ? `👑 Excepto el BOT PRINCIPAL: *${primarySkipped.name}* (+${primarySkipped.number}) sigue activo.\n\n` : ''}` +
+          `⚡ *El bot principal de verdad* sigue normal y tú sigues pudiendo usar todo.\n\n` +
+          `Reactiva todos con *${ctx.prefix}activarsubbs*`,
+      );
+    },
+  },
+  {
+    name: 'activarsubbs',
+    aliases: ['activarsub', 'desilenciar', 'unmutesubbot', 'unmutesub', 'unmutebot', 'unmuteall'],
+    category: 'owner',
+    desc: 'Reactiva TODOS los subbots silenciados a la vez (o solo uno si pasas un número).',
+    usage: 'activarsubbs [número]',
+    owner: true,
+    async execute(ctx) {
+      const target = await resolveSubbotTarget(ctx);
+      const { setSubbotMuted, listSubbots } = await import('../lib/subbots.js');
+      const list = listSubbots();
+
+      if (!list.length) {
+        await ctx.reply(`🤖 No hay subbots registrados.\n\nCrea uno con *${ctx.prefix}code*`);
+        return;
+      }
+
+      if (target) {
+        const record = setSubbotMuted(target.number, false);
+        if (!record) {
+          await ctx.reply(`❌ Ese subbot no está registrado.\n\nCrea uno con *${ctx.prefix}code ${target.number}*`);
+          return;
+        }
+        await ctx.reply(
+          `🔊 *SUBBOT ACTIVADO*\n\n🤖 Subbot: *${record.name}*\n📱 +${record.number}\n\nYa responde con normalidad ⚡`,
+        );
+        return;
+      }
+
+      let count = 0;
+      for (const s of list) {
+        setSubbotMuted(s.number, false);
+        count += 1;
+      }
+      await ctx.reply(`🔊 *SUBBOTS REACTIVADOS (${count})*\n\n🤖 Todos vuelven a responder con normalidad ⚡`);
     },
   },
   {
     name: 'delsubbot',
     aliases: ['delsub', 'removesubbot'],
     category: 'owner',
-    desc: 'Elimina un subbot y borra su sesión.',
-    usage: 'delsubbot <número>',
+    desc: 'Elimina un subbot y borra su sesión: por @mención, respuesta o número.',
+    usage: 'delsubbot <@user|número>',
     owner: true,
     async execute(ctx) {
-      const number = String(ctx.args[0] || '').replace(/\D/g, '');
-      if (!number) {
-        await ctx.reply(`💡 Uso: *${ctx.prefix}delsubbot* 503XXXXXXXX`);
+      const target = await resolveSubbotTarget(ctx);
+      if (!target) {
+        await ctx.reply(
+          `💡 *Uso:*\n${ctx.prefix}delsubbot @user\n${ctx.prefix}delsubbot 503XXXXXXXX\n${ctx.prefix}delsubbot (respondiendo a su mensaje)`,
+        );
         return;
       }
       const { findSubbot, removeSubbot } = await import('../lib/subbots.js');
-      const record = findSubbot(number);
+      const record = findSubbot(target.number);
       if (!record) {
-        await ctx.reply(`ℹ️ No existe un subbot con el número *+${number}*.`);
+        await ctx.reply(`ℹ️ No existe un subbot con el número *+${target.number}*.`);
         return;
       }
-      await removeSubbot(number);
-      await ctx.reply(`🗑️ Subbot *${record.name}* (+${number}) eliminado.\n\nSu sesión fue borrada.`);
+      await removeSubbot(target.number);
+      await ctx.reply(`🗑️ Subbot *${record.name}* (+${target.number}) eliminado.\n\nSu sesión fue borrada.`);
     },
   },
   {

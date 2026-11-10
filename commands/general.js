@@ -33,13 +33,21 @@ function uptimeText() {
 async function sendMenu(ctx) {
   const store = db();
   const isOwner = isOwnerNumber(ctx.senderNumber);
+  // En subbots normales se ocultan los comandos premium (descargas e IA).
+  // El owner, los subbots premium y el bot principal ven el menú completo.
+  const hidePremium = ctx.isSubbot && !ctx.isSubbotPremium && !ctx.isSubbotPrimary;
+  const isPremiumCmd = (c) =>
+    Boolean(c.premium || config.premiumCategories.includes(c.category));
   const available = (ctx.commands || []).filter(
-    (c) => !c.hidden && (c.category !== 'owner' || isOwner),
+    (c) =>
+      !c.hidden &&
+      (c.category !== 'owner' || isOwner) &&
+      (!hidePremium || !isPremiumCmd(c)),
   );
   const botName = store.botName || config.botName;
   // El menú NO muestra el enlace del repositorio.
   const text = buildMenu({
-    commands: ctx.commands || [],
+    commands: available,
     prefix: store.prefix || config.prefix,
     botName,
     pushName: ctx.pushName,
@@ -50,6 +58,10 @@ async function sendMenu(ctx) {
     menuLink: store.menuLink || '',
     style: store.menuStyle || 'galactico',
   });
+  // Aviso premium al final del menú de un subbot normal.
+  const footerNote = hidePremium
+    ? `\n\n💎 *Subbot normal:* las 📥 descargas y la 🤖 IA son PREMIUM.\nPide el tuyo con *${ctx.prefix}upgrade*.`
+    : '';
 
   // La imagen/video del banner y el menú van SIEMPRE en el mismo mensaje.
   const banner = store.banner;
@@ -59,16 +71,16 @@ async function sendMenu(ctx) {
       const isVideo =
         store.bannerType === 'video' || /\.(mp4|webm)$/i.test(String(banner));
       if (isVideo) {
-        await ctx.send({ video: buffer, gifPlayback: true, caption: text });
+        await ctx.send({ video: buffer, gifPlayback: true, caption: text + footerNote });
       } else {
-        await ctx.send({ image: buffer, caption: text });
+        await ctx.send({ image: buffer, caption: text + footerNote });
       }
       return;
     } catch (err) {
       console.error('[MENU] No se pudo enviar el banner con el menú:', err?.message || err);
     }
   }
-  await ctx.send({ text });
+  await ctx.send({ text: text + footerNote });
 }
 
 export default [
@@ -85,10 +97,50 @@ export default [
           await ctx.reply(`❌ No existe el comando *${ctx.args[0]}*.`);
           return;
         }
-        await ctx.reply(buildCommandHelp(target, ctx.prefix));
+        await ctx.reply(
+          buildCommandHelp(target, ctx.prefix, {
+            subbot: ctx.isSubbot,
+            subbotPremium: ctx.isSubbotPremium,
+          }),
+        );
         return;
       }
       await sendMenu(ctx);
+    },
+  },
+  {
+    name: 'upgrade',
+    aliases: ['vip', 'mejorar', 'serpremium'],
+    category: 'general',
+    desc: 'Muestra qué incluye un subbot premium y cómo conseguirlo.',
+    usage: 'upgrade',
+    async execute(ctx) {
+      const store = db();
+      const subbot = ctx.subbot;
+      const esPremium = ctx.isSubbotPremium;
+      const estado = !subbot
+        ? '🤖 Este bot es el *principal*: tiene todo desbloqueado.'
+        : ctx.isSubbotPrimary
+          ? '👑 Este subbot es el *BOT PRINCIPAL*: todo desbloqueado y no se puede silenciar.'
+          : esPremium
+            ? '💎 Tu subbot es *PREMIUM*: todo desbloqueado.'
+            : '🆓 Tu subbot es *normal*: descargas e IA bloqueadas.';
+      const lista = (config.premiumCategories || [])
+        .map((c) => {
+          const names = {
+            downloads: '📥 Descargas (.play, .ytmp3, .ytmp4, .tiktok…)',
+            ai: '🤖 IA (.ai, .gemini, .imagine, .aichat…)',
+          };
+          return names[c] || `✨ ${c}`;
+        })
+        .join('\n');
+      await ctx.reply(
+        `💎 *SUBBOT PREMIUM*\n\n${estado}\n\n` +
+          `*Un subbot PREMIUM desbloquea:*\n${lista || '✨ Funciones exclusivas'}\n\n` +
+          `*Subbot NORMAL incluye:*\n⚡ Menú, grupos, stickers, anime, economía, herramientas y más\n\n` +
+          `👑 Para activarlo, el owner usa:\n*${ctx.prefix}prem <número> [días]*\n\n` +
+          `📱 Contacto: ${config.support}`,
+      );
     },
   },
   {

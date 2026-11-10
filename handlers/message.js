@@ -92,7 +92,7 @@ function adminFlags(meta, sock, senderIds) {
 }
 
 async function makeContext(sock, msg, m, extra = {}) {
-  const { isAdmin = false, isBotAdmin = false, groupMeta = null } = extra;
+  const { isAdmin = false, isBotAdmin = false, groupMeta = null, subbot = null } = extra;
   const isOwner = isOwnerNumber(m.senderNumber);
   const prefix = db().prefix || config.prefix;
 
@@ -188,6 +188,14 @@ async function makeContext(sock, msg, m, extra = {}) {
     numberToJid,
     buildMenu,
     buildCommandHelp,
+    subbot,
+    isSubbot: Boolean(subbot),
+    // Premium vigente: sin fecha límite o con días restantes.
+    isSubbotPremium: Boolean(
+      subbot?.premium && (!subbot.premiumUntil || subbot.premiumUntil > Date.now()),
+    ),
+    // Bot principal: todo desbloqueado, no se puede silenciar.
+    isSubbotPrimary: Boolean(subbot?.primary),
   };
 
   return ctx;
@@ -286,7 +294,26 @@ export async function handleMessage(sock, msg) {
   // Grupo silenciado.
   if (group?.muted && !owner && !isAdmin) return;
 
-  const ctx = await makeContext(sock, msg, m, { isAdmin, isBotAdmin, groupMeta });
+  // ¿Este mensaje lo está respondiendo un subbot? Si es normal (no premium)
+  // no puede usar las categorías premium (descargas e IA por defecto).
+  const subbot = (() => {
+    const number = jidToNumber(sock.user?.id);
+    if (!number) return null;
+    const list = Array.isArray(store.subbots) ? store.subbots : [];
+    return list.find((s) => String(s.number || '').replace(/\D/g, '') === number) || null;
+  })();
+  const subbotPremium = Boolean(
+    subbot?.premium && (!subbot.premiumUntil || subbot.premiumUntil > Date.now()),
+  );
+  const isPremiumCommand = (c) =>
+    Boolean(c.premium || config.premiumCategories.includes(c.category));
+
+  // Subbot silenciado por el owner (.silenciarsubbs): NO responde a nadie,
+  // ni siquiera al owner. Se controla desde el bot principal (.activarsubbs).
+  // El bot principal (primary) nunca se silencia.
+  if (subbot?.muted && !subbot?.primary) return;
+
+  const ctx = await makeContext(sock, msg, m, { isAdmin, isBotAdmin, groupMeta, subbot });
   ctx.isAdmin = owner || isAdmin;
 
   // Auto lectura.
@@ -374,6 +401,17 @@ export async function handleMessage(sock, msg) {
   ctx.text = args.join(' ');
   ctx.rawArgs = raw;
   store.stats.commands = (store.stats.commands || 0) + 1;
+
+  if (subbot && isPremiumCommand(cmd) && !subbotPremium && !subbot.primary) {
+    await ctx.reply(
+      `💎 *Comando PREMIUM*\n\n` +
+        `Este subbot es *normal* y no incluye las descargas ni la IA.\n\n` +
+        `👑 Pídele al owner que active el premium con:\n` +
+        `*${prefix}prem ${subbot.number}*\n\n` +
+        `💡 Más info: *${prefix}upgrade*`,
+    );
+    return;
+  }
 
   if (cmd.owner && !owner) {
     await ctx.reply('👑 Este comando es exclusivo del *owner*.');

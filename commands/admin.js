@@ -144,7 +144,7 @@ export default [
   },
   {
     name: 'mute',
-    aliases: ['silenciar', 'botoff'],
+    aliases: ['botoff'],
     category: 'admin',
     desc: 'Silencia el bot en este grupo (solo admins podrán usar comandos).',
     usage: 'mute',
@@ -317,7 +317,7 @@ export default [
   },
   {
     name: 'warn',
-    aliases: ['advertir', 'warning'],
+    aliases: ['warning'],
     category: 'admin',
     desc: 'Advierte a un miembro. Al llegar al límite será expulsado.',
     usage: 'warn @usuario [motivo]',
@@ -514,7 +514,7 @@ export default [
   },
   {
     name: 'open',
-    aliases: ['abrir', 'todos'],
+    aliases: ['abrir'],
     category: 'admin',
     desc: 'Abre el grupo para que todos escriban.',
     usage: 'open',

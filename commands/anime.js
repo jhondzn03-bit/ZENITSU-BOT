@@ -1,14 +1,23 @@
 import {
+  extractUrl,
   fetchBuffer,
+  isUrl,
   jidToNumber,
   truncate,
 } from '../lib/utils.js';
 import {
+  adultVideoBuffer,
+  adultVideoInfo,
+  adultVideoSearch,
   getAnimeQuote,
   getAnimeReaction,
   getNekosImage,
+  getNsfwImage,
   getWaifuImage,
+  isAdultSite,
+  isNsfwCategory,
   jikanSearch,
+  NSFW_CATEGORIES,
 } from '../lib/api.js';
 import { gifToMp4 } from '../lib/sticker.js';
 import { trackSent } from '../lib/state.js';
@@ -69,6 +78,57 @@ function reactionCommand(name, aliases, category, emoji, text) {
       await sendAnimeMedia(ctx, url, caption, mentions);
     },
   };
+}
+
+// Comandos +18: cada categoría de purrbot tiene su propio comando corto,
+// así salen todos en el menú y se usan directo (.anal, .yuri, …).
+function nsfwCommand(name, aliases, category, label) {
+  return {
+    name,
+    aliases,
+    category: 'nsfw',
+    desc: `Contenido +18: ${label}.`,
+    usage: name,
+    async execute(ctx) {
+      const url = await getNsfwImage(category);
+      await sendAnimeMedia(ctx, url, `🔥 *+18 · ${label}*`);
+    },
+  };
+}
+
+// Videos +18 de XVideos / XNXX / PornHub. Acepta un enlace directo o el nombre
+// a buscar (toma el primer resultado, igual que .play). Envía avances para que
+// nunca quede "pensando" sin decir nada.
+async function sendAdultVideo(ctx, query, { site = 'xvideos', gay = false, source } = {}) {
+  const label = source || site;
+  const link = extractUrl(query) || (isUrl(String(query).trim()) ? String(query).trim() : '');
+
+  let info;
+  if (link) {
+    if (!isAdultSite(link)) throw new Error('solo puedo descargar videos de XVideos, XNXX o PornHub');
+    await ctx.reply(`📥 *+18 · ${label}*\n\n_Extractiendo video..._`);
+    info = await adultVideoInfo(link);
+  } else {
+    const term = String(query || '').trim();
+    if (!term) throw new Error('escribe el nombre de un video o un enlace');
+    const results = await adultVideoSearch(term, { site, gay, limit: 5 });
+    await ctx.reply(
+      `🔎 *+18 · ${label}*\n\n1º resultado: *${truncate(results[0].title, 90)}*\n\n_Descargando video... ⏳_`,
+    );
+    info = await adultVideoInfo(results[0].url);
+  }
+
+  const buffer = await adultVideoBuffer(info);
+  const sent = await ctx.sock.sendMessage(
+    ctx.chat,
+    {
+      video: buffer,
+      mimetype: 'video/mp4',
+      caption: `🔥 *+18 · ${label}*\n🎬 ${truncate(info.title, 120)}`,
+    },
+    { quoted: ctx.msg },
+  );
+  trackSent(sent);
 }
 
 export default [
@@ -251,4 +311,107 @@ export default [
   reactionCommand('laugh', ['reir', 'risa'], 'laugh', '😂', 'se está riendo'),
   reactionCommand('bonk', ['golpe'], 'bonk', '🔨', 'un bonk'),
   reactionCommand('yeet', ['lanzar'], 'yeet', '🚀', 'un yeet'),
+  /* ───────────────────────── Comandos NSFW (+18) ───────────────────────── */
+  {
+    name: 'nsfw',
+    aliases: ['nsfwimg', 'xxx', '+18'],
+    category: 'nsfw',
+    desc: 'Contenido +18 por categoría (ver la lista con nsfwmenu).',
+    usage: 'nsfw <categoría>',
+    async execute(ctx) {
+      const category = String(ctx.args[0] || '').toLowerCase().trim();
+      if (!category) {
+        const cats = Object.entries(NSFW_CATEGORIES)
+          .map(([k, v]) => `• *${k}* — ${v}`)
+          .join('\n');
+        await ctx.reply(
+          `🔥 *CONTENIDO +18*\n\nCategorías:\n${cats}\n\n` +
+            `Uso: *${ctx.prefix}nsfw yuri*\nLista de comandos: *${ctx.prefix}nsfwmenu*`,
+        );
+        return;
+      }
+      if (!isNsfwCategory(category)) {
+        await ctx.reply(
+          `❌ Categoría no válida: *${category}*\n\nUsa *${ctx.prefix}nsfwmenu* para ver la lista completa.`,
+        );
+        return;
+      }
+      const url = await getNsfwImage(category);
+      await sendAnimeMedia(ctx, url, `🔥 *+18 · ${NSFW_CATEGORIES[category]}*`);
+    },
+  },
+  {
+    name: 'nsfwmenu',
+    aliases: ['menunsfw', 'nsfwlista', 'nsfwlist'],
+    category: 'nsfw',
+    desc: 'Muestra todas las categorías NSFW (+18).',
+    usage: 'nsfwmenu',
+    async execute(ctx) {
+      const list = Object.entries(NSFW_CATEGORIES)
+        .map(([k, v]) => `🔥 *${ctx.prefix}${k}* — ${v}`)
+        .join('\n');
+      await ctx.reply(
+        `🔥 *MENÚ NSFW (+18)* 🔥\n\n*IMÁGENES Y GIFS*\n${list}\n\n` +
+          `*VIDEOS 🎬*\n` +
+          `📥 *${ctx.prefix}xvideo* <nombre> — busca en XVideos\n` +
+          `📥 *${ctx.prefix}xnxx* <nombre> — busca en XNXX\n` +
+          `📥 *${ctx.prefix}gayvideo* <nombre> — videos gays\n` +
+          `📥 *${ctx.prefix}pornhub* <nombre> — busca en PornHub\n\n` +
+          `💡 Todos aceptan también el *enlace directo* del video.\n` +
+          `💡 También: *${ctx.prefix}nsfw <categoría>*\n⚠️ Solo para mayores de edad.`,
+      );
+    },
+  },
+  nsfwCommand('anal', [], 'anal', 'Anal'),
+  nsfwCommand('blowjob', ['bj'], 'blowjob', 'Blowjob'),
+  nsfwCommand('cum', [], 'cum', 'Cum'),
+  nsfwCommand('fuck', ['sexo'], 'fuck', 'Sexo'),
+  nsfwCommand('nsfwneko', ['nekonsfw', 'neko18'], 'neko', 'Neko +18'),
+  nsfwCommand('pussylick', ['pussy'], 'pussylick', 'Pussylick'),
+  nsfwCommand('solonsfw', ['chicasola'], 'solo', 'Solo (chica)'),
+  nsfwCommand('threesome', ['trio'], 'threesome_ffm', 'Trío'),
+  nsfwCommand('yaoi', [], 'yaoi', 'Yaoi'),
+  nsfwCommand('yuri', ['lesbiana', 'lesbi'], 'yuri', 'Yuri'),
+  /* ─────────────────────── Videos +18 (XVideos/XNXX/PornHub) ─────────────── */
+  {
+    name: 'xvideo',
+    aliases: ['xvideos', 'xv'],
+    category: 'nsfw',
+    desc: 'Descarga un video +18 de XVideos: por nombre o enlace.',
+    usage: 'xvideo <nombre o enlace>',
+    async execute(ctx) {
+      await sendAdultVideo(ctx, ctx.text, { site: 'xvideos', source: 'XVideos' });
+    },
+  },
+  {
+    name: 'gayvideo',
+    aliases: ['gayvid', 'videogay', 'gay'],
+    category: 'nsfw',
+    desc: 'Descarga un video gay +18: por nombre o enlace.',
+    usage: 'gayvideo <nombre o enlace>',
+    async execute(ctx) {
+      const term = String(ctx.text || '').trim();
+      await sendAdultVideo(ctx, term || 'gay', { site: 'xvideos', gay: true, source: 'Gay +18' });
+    },
+  },
+  {
+    name: 'xnxx',
+    aliases: ['xnxxvideo'],
+    category: 'nsfw',
+    desc: 'Descarga un video +18 de XNXX: por nombre o enlace.',
+    usage: 'xnxx <nombre o enlace>',
+    async execute(ctx) {
+      await sendAdultVideo(ctx, ctx.text, { site: 'xnxx', source: 'XNXX' });
+    },
+  },
+  {
+    name: 'pornhub',
+    aliases: ['ph', 'phvideo'],
+    category: 'nsfw',
+    desc: 'Descarga un video +18 de PornHub: por nombre o enlace.',
+    usage: 'pornhub <nombre o enlace>',
+    async execute(ctx) {
+      await sendAdultVideo(ctx, ctx.text, { site: 'pornhub', source: 'PornHub' });
+    },
+  },
 ];

@@ -496,7 +496,7 @@ export default [
   },
   {
     name: 'currency',
-    aliases: ['moneda', 'convertir'],
+    aliases: ['convertir'],
     category: 'tools',
     desc: 'Convierte entre monedas.',
     usage: 'currency <cantidad> <de> <a>',

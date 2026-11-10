@@ -250,7 +250,7 @@ export default [
   },
   {
     name: 'gamble',
-    aliases: ['apostar', 'apuesta'],
+    aliases: ['apuesta'],
     category: 'economy',
     desc: 'Apuesta monedas al 50/50.',
     usage: 'gamble <cantidad | all>',
@@ -323,7 +323,7 @@ export default [
   },
   {
     name: 'read',
-    aliases: ['leer', 'marcarleido'],
+    aliases: ['marcarleido'],
     category: 'general',
     desc: 'Marca el chat actual como leído.',
     usage: 'read',

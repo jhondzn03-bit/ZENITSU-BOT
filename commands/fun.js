@@ -418,7 +418,7 @@ export default [
   },
   {
     name: 'rate',
-    aliases: ['calificar', 'nivel'],
+    aliases: ['calificar'],
     category: 'fun',
     desc: 'Califica a alguien o algo del 1 al 100.',
     usage: 'rate <texto | @usuario>',
