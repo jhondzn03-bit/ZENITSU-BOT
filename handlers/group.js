@@ -1,6 +1,6 @@
 import { config } from '../config.js';
 import { db, getGroup, save } from '../lib/db.js';
-import { jidToNumber, withWatermark } from '../lib/utils.js';
+import { jidToNumber, toJid, withWatermark } from '../lib/utils.js';
 import { getGroupMetadata, invalidateGroupMeta, trackSent, wasSent } from '../lib/state.js';
 
 function render(template, { user, group, count, desc }) {
@@ -29,7 +29,11 @@ export async function handleGroupParticipants(sock, update) {
   const botNumber = jidToNumber(sock.user?.id);
 
   for (const participant of participants) {
-    const num = jidToNumber(participant);
+    // El stub puede traer el participante como objeto {id, server} (LID):
+    // se normaliza a JID string para poder mencionarlo.
+    const pJid = toJid(participant);
+    if (!pJid) continue;
+    const num = jidToNumber(pJid);
     const isBot = num === botNumber;
 
     if (action === 'add') {
@@ -50,7 +54,7 @@ export async function handleGroupParticipants(sock, update) {
       try {
         const sent = await sock.sendMessage(id, {
           text: withWatermark(text),
-          mentions: [participant],
+          mentions: [pJid],
         });
         trackSent(sent);
       } catch (err) {
@@ -63,7 +67,7 @@ export async function handleGroupParticipants(sock, update) {
       // Se puede apagar por grupo con {prefix}adminnotice off.
       if (!g.adminNotice) continue;
       const promote = action === 'promote';
-      const authorJid = update.author || update.participant;
+      const authorJid = toJid(update.author) || toJid(update.participant);
       const authorNum = jidToNumber(authorJid);
       const botName = db().botName || config.botName;
       const repo = 'https://github.com/jhondzn03-bit/ZENITSU-BOT';
@@ -76,8 +80,7 @@ export async function handleGroupParticipants(sock, update) {
         ? `˚👻 *Nuevo administrador* 𐔌 @${num}`
         : `˚🥀 *Administrador removido* 𐔌 @${num}`;
       const text = `${head}\n\n${byLine}\n\n✿ ${repo}`;
-      const mentions = [participant];
-      if (byHuman) mentions.push(authorJid);
+      const mentions = byHuman ? [pJid, authorJid] : [pJid];
       try {
         const sent = await sock.sendMessage(id, {
           text: withWatermark(text),
@@ -115,7 +118,7 @@ export async function handleGroupParticipants(sock, update) {
       try {
         const sent = await sock.sendMessage(id, {
           text: withWatermark(text),
-          mentions: [participant],
+          mentions: [pJid],
         });
         trackSent(sent);
       } catch (err) {
@@ -140,7 +143,7 @@ export async function handleGroupIconChange(sock, msg) {
     if (!g.adminNotice) return;
     if (wasSent(msg.key)) return; // lo cambió el propio bot: no nos avisamos
 
-    const authorJid = msg.key.participant || msg.participant;
+    const authorJid = toJid(msg.key.participant || msg.participant);
     const num = jidToNumber(authorJid);
     const removed = (msg.messageStubParameters || []).some(
       (p) => String(p).toLowerCase() === 'remove',
