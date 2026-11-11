@@ -27,9 +27,12 @@ import {
   probeDuration,
   sleep,
   tmpFile,
+  toJid,
   truncate,
+  watermarkContent,
   withWatermark,
 } from '../lib/utils.js';
+import { getGroupMetadata, trackSent } from '../lib/state.js';
 import { getTargetJid, findParticipant } from '../lib/targets.js';
 import { gifToMp4 } from '../lib/sticker.js';
 import { DEFAULT_MENU_STYLE, MENU_STYLES } from '../lib/menu.js';
@@ -192,6 +195,105 @@ function toggle(name, key, label, aliases = []) {
       await ctx.reply(`⚙️ *${label}:* ${db()[key] ? '✅ ON' : '❌ OFF'}`);
     },
   };
+}
+
+// ─── .kickall / .tumbargrupo ────────────────────────────────────────────────
+// Demolición total del grupo: solo el owner, y con palabra de confirmación.
+// .tumbargrupo lanza una lluvia de mensajes reenviados del canal y al final
+// expulsa a todos; .kickall hace solo la expulsión.
+
+const CONFIRM_WORDS = ['confirmar', 'confirma', 'confirm', 'si', 'sí', 'yes', 'ok'];
+
+// Frases de la lluvia: rotan para que WhatsApp no aburra los mensajes
+// idénticos tan rápido.
+const RAID_PHRASES = [
+  '⚡ ZENITSU DOMINA PERRES ⚡',
+  '🔥 ZENITSU DOMINA PERRES 🔥',
+  '⚡⚡ ZENITSU DOMINA PERRES ⚡⚡',
+  '🌩️ ZENITSU DOMINA TODOS LOS PERRES 🌩️',
+  '👑 ZENITSU DOMINA ESTE GRUPO, PERRES 👑',
+  '🐉 SÉPTIMO ESTILO: ZENITSU DOMINA PERRES 🐉',
+  '⚡ DIOS DEL TRUENO FLAMÍGERO: ZENITSU DOMINA PERRES ⚡',
+  '🌩️ NADIE SE ME PONE DELANTE, PERRES 🌩️',
+];
+
+// Demoliciones en curso por grupo: mientras una corre, no entra otra en el
+// mismo chat (dos lluvias cruzadas tumbarían al bot antes que al grupo).
+const activeRaids = new Set();
+
+// Jid para expulsar a un participante de la metadata: usa su id completo y,
+// si llegara roto (dígitos sueltos), lo reconstruye con lid/pn.
+function kickJidOf(p) {
+  const id = typeof p?.id === 'string' ? p.id : '';
+  if (id.includes('@')) return toJid(id);
+  const lid = toJid(p?.lid);
+  if (lid) return lid;
+  const pn = [p?.pn, p?.phoneNumber].map(jidToNumber).find(Boolean);
+  if (pn) return numberToJid(pn);
+  if (id && typeof p?.server === 'string') return toJid({ id, server: p.server });
+  return '';
+}
+
+// Número real de un participante: pn/phoneNumber directo, id @s.whatsapp.net
+// o, si solo trae LID, lo resuelve con el almacén local de la sesión (lo
+// llena el history sync de Baileys; no gasta red).
+async function realNumberOf(ctx, p) {
+  const direct = [p?.pn, p?.phoneNumber].map(jidToNumber).filter(Boolean)[0];
+  if (direct) return direct;
+  const id = toJid(p?.id);
+  if (id && !id.endsWith('@lid')) return jidToNumber(id);
+  const lid = toJid(p?.lid) || id || '';
+  if (lid.endsWith('@lid')) {
+    try {
+      const pn = await ctx.sock?.signalRepository?.lidMapping?.getPNForLID?.(lid);
+      const n = jidToNumber(pn);
+      if (n) return n;
+    } catch {}
+  }
+  return '';
+}
+
+// Expulsa a TODOS los participantes menos el creador del grupo (WhatsApp no
+// lo permite), el propio bot y los owners. Va en tandas de 10 con pausa
+// para que WhatsApp no lo tome como abuso. Devuelve el resumen del ataque.
+async function kickEveryone(ctx) {
+  const meta = await getGroupMetadata(ctx.sock, ctx.chat);
+  const participants = meta?.participants || [];
+  const botNumber = jidToNumber(ctx.sock?.user?.id);
+  const botLidRaw = toJid(ctx.sock?.user?.lid);
+  const botLidNumber = botLidRaw
+    ? jidToNumber(botLidRaw.endsWith('@lid') ? botLidRaw : `${botLidRaw.replace(/\D/g, '')}@lid`)
+    : '';
+  const owners = new Set((db().owners || []).map((o) => String(o).replace(/\D/g, '')));
+  const targets = [];
+  let botAdmin = false;
+  for (const p of participants) {
+    if (p?.admin === 'superadmin') continue; // creador del grupo: intocable
+    const ids = [p?.id, p?.lid, p?.pn, p?.phoneNumber].filter(Boolean).map(jidToNumber);
+    if (ids.includes(botNumber) || (botLidNumber && ids.includes(botLidNumber))) {
+      if (p?.admin === 'admin' || p?.admin === 'superadmin') botAdmin = true;
+      continue; // el bot no se autodestruye
+    }
+    const real = await realNumberOf(ctx, p);
+    if (real && owners.has(real)) continue; // owner a salvo
+    const jid = kickJidOf(p);
+    if (jid) targets.push(jid);
+  }
+  let kicked = 0;
+  let failed = 0;
+  for (let i = 0; i < targets.length; i += 10) {
+    const batch = targets.slice(i, i + 10);
+    try {
+      const res = await ctx.sock.groupParticipantsUpdate(ctx.chat, batch, 'remove');
+      const ok = (Array.isArray(res) ? res : []).filter((r) => r?.status === '200').length;
+      kicked += ok;
+      failed += batch.length - ok;
+    } catch {
+      failed += batch.length;
+    }
+    if (i + 10 < targets.length) await sleep(300);
+  }
+  return { total: participants.length, targets: targets.length, kicked, failed, botAdmin };
 }
 
 export default [
@@ -1310,6 +1412,115 @@ export default [
         `👑 *AUTOADMIN:* ${db().autoAdmin ? '✅ ON' : '❌ OFF'}${extra}`,
         mentions.length ? { mentions } : {},
       );
+    },
+  },
+  {
+    name: 'kickall',
+    aliases: ['expulsartodos', 'kicktodos', 'sacartodos'],
+    category: 'owner',
+    desc: 'Expulsa a TODOS los miembros del grupo (se salvan owner, bot y creador).',
+    usage: 'kickall confirmar',
+    owner: true,
+    group: true,
+    async execute(ctx) {
+      const word = String(ctx.args[0] || '').toLowerCase().trim();
+      if (!CONFIRM_WORDS.includes(word)) {
+        await ctx.reply(
+          '⚠️ *KICKALL* expulsa a TODOS los miembros de este grupo.\n' +
+            '▸ Se salvan: el owner, el bot y el creador del grupo\n\n' +
+            `💡 Si estás seguro, escribe: *${ctx.prefix}kickall confirmar*`,
+        );
+        return;
+      }
+      if (activeRaids.has(ctx.chat)) {
+        await ctx.reply('⚠️ Hay una demolición en curso en este grupo.');
+        return;
+      }
+      if (!ctx.isBotAdmin) {
+        await ctx.reply(
+          '❌ No soy admin del grupo: WhatsApp no me deja expulsar a nadie.\n\n' +
+            '💡 Hazme admin y vuelve a intentarlo.',
+        );
+        return;
+      }
+      const r = await kickEveryone(ctx);
+      await ctx.reply(
+        `👢 *KICKALL TERMINADO*\n\n` +
+          `▸ Participantes: *${r.total}*\n` +
+          `▸ Expulsados: *${r.kicked}/${r.targets}*\n` +
+          `▸ Fallidos: *${r.failed}*`,
+      );
+    },
+  },
+  {
+    name: 'tumbargrupo',
+    aliases: ['tumbar', 'tumbargpo', 'raid'],
+    category: 'owner',
+    desc: 'Tumba el grupo: lluvia de mensajes reenviados del canal y expulsa a todos.',
+    usage: 'tumbargrupo [cantidad] confirmar',
+    owner: true,
+    group: true,
+    async execute(ctx) {
+      const args = (ctx.args || []).map((a) => String(a).toLowerCase().trim());
+      let count = 200;
+      let confirmed = false;
+      for (const a of args) {
+        if (/^\d+$/.test(a)) count = parseInt(a, 10);
+        else if (CONFIRM_WORDS.includes(a)) confirmed = true;
+      }
+      count = Math.max(1, Math.min(500, count));
+      if (!confirmed) {
+        await ctx.reply(
+          '💣 *TUMBARGRUPO* demuele este grupo sin vuelta atrás:\n' +
+            `▸ ${count} mensajes en cadena reenviados del canal\n` +
+            '▸ Al final expulsa a TODOS (se salvan owner, bot y creador)\n\n' +
+            `💡 Para lanzarlo: *${ctx.prefix}tumbargrupo ${count} confirmar*`,
+        );
+        return;
+      }
+      if (activeRaids.has(ctx.chat)) {
+        await ctx.reply('⚠️ Ya hay una demolición en curso en este grupo.');
+        return;
+      }
+      // Se marca ANTES del primer await: otra demolición del mismo grupo
+      // queda bloqueada al instante, sin carrera de por medio.
+      activeRaids.add(ctx.chat);
+      try {
+        await ctx.reply(
+          `⚡ *DEMOLICIÓN INICIADA*\n\n▸ ${count} mensajes en camino\n▸ Al final expulso a todos\n\n🌩️ ZENITSU DOMINA PERRES`,
+        );
+        let sent = 0;
+        let failures = 0;
+        let delay = 350;
+        for (let i = 0; i < count; i++) {
+          const phrase = RAID_PHRASES[i % RAID_PHRASES.length];
+          try {
+            // Envío directo (no ctx.send) para no citar el mensaje del
+            // comando: cada mensaje cae con su banner del canal.
+            const msg = await ctx.sock.sendMessage(ctx.chat, watermarkContent({ text: phrase }));
+            trackSent(msg);
+            sent++;
+            failures = 0;
+            delay = 350;
+          } catch {
+            failures++;
+            if (failures >= 10) break; // WhatsApp está cortando: no insistir
+            delay = Math.min(5000, delay * 2);
+          }
+          await sleep(delay);
+        }
+        // Expulsión final: con metadata fresca se comprueba si sigo siendo
+        // admin (la lluvia tarda más de un minuto, las cosas cambian).
+        const r = await kickEveryone(ctx);
+        let kickReport;
+        if (!r.botAdmin) kickReport = '▸ Expulsión omitida: no soy admin del grupo';
+        else kickReport = `▸ Expulsados: *${r.kicked}/${r.targets}* (fallidos: ${r.failed})`;
+        await ctx.reply(
+          `⚡ *GRUPO TUMBADO*\n\n▸ Mensajes enviados: *${sent}/${count}*\n${kickReport}\n\n🌩️ ZENITSU DOMINA PERRES`,
+        );
+      } finally {
+        activeRaids.delete(ctx.chat);
+      }
     },
   },
   {
