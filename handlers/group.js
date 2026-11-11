@@ -1,7 +1,7 @@
 import { config } from '../config.js';
 import { db, getGroup, save } from '../lib/db.js';
 import { jidToNumber, withWatermark } from '../lib/utils.js';
-import { getGroupMetadata, invalidateGroupMeta, trackSent } from '../lib/state.js';
+import { getGroupMetadata, invalidateGroupMeta, trackSent, wasSent } from '../lib/state.js';
 
 function render(template, { user, group, count, desc }) {
   return String(template)
@@ -58,6 +58,37 @@ export async function handleGroupParticipants(sock, update) {
       }
     }
 
+    if (action === 'promote' || action === 'demote') {
+      // Aviso decorado "👻 Nuevo administrador / 🥀 Administrador removido".
+      // Se puede apagar por grupo con {prefix}adminnotice off.
+      if (!g.adminNotice) continue;
+      const promote = action === 'promote';
+      const authorJid = update.author || update.participant;
+      const authorNum = jidToNumber(authorJid);
+      const botName = db().botName || config.botName;
+      const repo = 'https://github.com/jhondzn03-bit/ZENITSU-BOT';
+      // Quién lo hizo: si fue el bot (.promote/.demote) se acredita al bot.
+      const byHuman = authorJid && authorNum !== botNumber && authorNum !== num;
+      const byLine = byHuman
+        ? `💐﹕ *${promote ? 'Ascendido' : 'Degradado'} por:* ─◦ @${authorNum}`
+        : `💐﹕ *${promote ? 'Ascendido' : 'Degradado'} por:* ─◦ ⚡ ${botName}`;
+      const head = promote
+        ? `˚👻 *Nuevo administrador* 𐔌 @${num}`
+        : `˚🥀 *Administrador removido* 𐔌 @${num}`;
+      const text = `${head}\n\n${byLine}\n\n✿ ${repo}`;
+      const mentions = [participant];
+      if (byHuman) mentions.push(authorJid);
+      try {
+        const sent = await sock.sendMessage(id, {
+          text: withWatermark(text),
+          mentions,
+        });
+        trackSent(sent);
+      } catch (err) {
+        console.error('[ADMIN-NOTICE]', err.message);
+      }
+    }
+
     if (action === 'remove') {
       if (isBot) {
         // Me echaron del grupo: archiva el chat para que no quede como
@@ -91,5 +122,41 @@ export async function handleGroupParticipants(sock, update) {
         console.error('[GOODBYE]', err.message);
       }
     }
+  }
+}
+
+// ─── Cambio de imagen del grupo ─────────────────────────────────────────────
+// Baileys 7 no emite evento propio para GROUP_CHANGE_ICON (stub 22): el aviso
+// llega como mensaje stub en messages.upsert. Este handler lo detecta y
+// publica "✿ Nueva imagen actualizada ─◦ @quien" (o "Imagen eliminada").
+const GROUP_CHANGE_ICON = 22;
+
+export async function handleGroupIconChange(sock, msg) {
+  try {
+    if (msg?.messageStubType !== GROUP_CHANGE_ICON) return;
+    const id = msg.key?.remoteJid;
+    if (!id || !id.endsWith('@g.us')) return;
+    const g = getGroup(id);
+    if (!g.adminNotice) return;
+    if (wasSent(msg.key)) return; // lo cambió el propio bot: no nos avisamos
+
+    const authorJid = msg.key.participant || msg.participant;
+    const num = jidToNumber(authorJid);
+    const removed = (msg.messageStubParameters || []).some(
+      (p) => String(p).toLowerCase() === 'remove',
+    );
+    const head = removed
+      ? '✿ *Imagen eliminada*'
+      : '✿ *Nueva imagen actualizada*';
+    const text = num
+      ? `${head} ─◦ @${num}`
+      : head;
+    const sent = await sock.sendMessage(id, {
+      text: withWatermark(text),
+      mentions: num ? [authorJid] : [],
+    });
+    trackSent(sent);
+  } catch (err) {
+    console.error('[GROUP-ICON]', err?.message || err);
   }
 }

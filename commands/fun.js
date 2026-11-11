@@ -12,6 +12,9 @@ import {
   getJoke,
   getMeme,
   getQuote,
+  getKanyeQuote,
+  getDogImage,
+  getCatImage,
   translateText,
 } from '../lib/api.js';
 
@@ -161,6 +164,7 @@ const TRIVIA = [
 ];
 
 const triviaSessions = new Map();
+const guessGames = new Map(); // partidas de .adivina por chat
 
 function namesForShip(ctx) {
   const text = ctx.text.trim();
@@ -509,6 +513,91 @@ export default [
       } else {
         await ctx.reply(`❌ *Incorrecto.*\n\nLa respuesta correcta era *${session.answer}*.\n\n🌩️ ¡Sigue entrenando!`);
       }
+    },
+  },
+  {
+    name: 'kanye',
+    aliases: ['kanyequote', 'west'],
+    category: 'fun',
+    desc: 'Una cita aleatoria de Kanye West.',
+    usage: 'kanye',
+    async execute(ctx) {
+      const quote = await getKanyeQuote();
+      await ctx.reply(`🎤 *KANYE DICE:*\n\n"${quote}"\n\n_— Kanye West, probablemente._`);
+    },
+  },
+  {
+    name: 'dog',
+    aliases: ['perro', 'doggo', 'perrito'],
+    category: 'fun',
+    desc: 'Foto aleatoria de un perro adorable.',
+    usage: 'dog [raza]',
+    async execute(ctx) {
+      await ctx.send({ image: { url: await getDogImage(ctx.text.trim()) }, caption: '🐶 *¡GUAU!* Un perrito para alegrarte el día ⚡' });
+    },
+  },
+  {
+    name: 'cat',
+    aliases: ['gato', 'kitty', 'gatito'],
+    category: 'fun',
+    desc: 'Foto aleatoria de un gato.',
+    usage: 'cat',
+    async execute(ctx) {
+      await ctx.send({ image: { url: await getCatImage() }, caption: '🐱 *MIAU...* Un gatito para ti ⚡' });
+    },
+  },
+  {
+    name: 'adivina',
+    aliases: ['adivinanza', 'guess', 'numero'],
+    category: 'fun',
+    desc: 'Juego: adivina el número secreto del 1 al 100.',
+    usage: 'adivina | adivina <número> | adivina rendirse',
+    async execute(ctx) {
+      const arg = ctx.text.trim().toLowerCase();
+
+      // Rendirse.
+      if (arg === 'rendirse' || arg === 'rendir' || arg === 'stop') {
+        if (!guessGames.has(ctx.chat)) {
+          await ctx.reply('❌ No hay juego activo aquí. Empieza con *.adivina*');
+          return;
+        }
+        const g = guessGames.get(ctx.chat);
+        guessGames.delete(ctx.chat);
+        await ctx.reply(`🏳️ *Te rendiste...*\n\nEl número era *${g.number}*. ¡Otra vez será! ⚡`);
+        return;
+      }
+
+      // Adivinar.
+      if (/^\d{1,3}$/.test(arg)) {
+        const g = guessGames.get(ctx.chat);
+        if (!g) {
+          await ctx.reply(`❌ No hay juego activo. Empieza con *${ctx.prefix}adivina*`);
+          return;
+        }
+        const n = Number(arg);
+        g.tries++;
+        if (n === g.number) {
+          guessGames.delete(ctx.chat);
+          await ctx.reply(
+            `🎉 *¡ADIVINASTE!*\n\nEl número era *${g.number}*.\n▸ Intentos: *${g.tries}*\n\n${g.tries <= 7 ? '⚡ ¡Nivel Respiración del Trueno!' : '🌩️ ¡Bien hecho, cazador!'}`,
+          );
+          return;
+        }
+        if (Date.now() > g.expires) {
+          guessGames.delete(ctx.chat);
+          await ctx.reply(`⏱️ *Se acabó el tiempo.* El número era *${g.number}*.`);
+          return;
+        }
+        const hint = n < g.number ? '⬆️ *MÁS ARRIBA*' : '⬇️ *MÁS ABAJO*';
+        await ctx.reply(`${hint}\n\nIntento *${g.tries}* · número: ${n}\n_Pista:_ ${Math.abs(n - g.number) <= 5 ? '🔥 ¡Estás MUY cerca!' : Math.abs(n - g.number) <= 15 ? '🙂 Tibio...' : '❄️ Frío...'}`);
+        return;
+      }
+
+      // Empezar.
+      guessGames.set(ctx.chat, { number: randomInt(1, 100), tries: 0, expires: Date.now() + 5 * 60 * 1000 });
+      await ctx.reply(
+        `🔢 *ADIVINA EL NÚMERO*\n\nPensé un número del *1 al 100*.\n\n▸ Adivina con *${ctx.prefix}adivina <número>*\n▸ Ríndete con *${ctx.prefix}adivina rendirse*\n⏱️ Tienes 5 minutos\n\n⚡ ¡Demuestra tu instinto de cazador!`,
+      );
     },
   },
 ];

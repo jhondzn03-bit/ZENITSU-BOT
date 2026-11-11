@@ -19,6 +19,7 @@ import {
   tiktokDownload,
   tiktokSearch,
   twitterDownload,
+  wallpaperSearch,
   youtubeDownload,
 } from '../lib/api.js';
 import { trackSent } from '../lib/state.js';
@@ -473,6 +474,114 @@ export default [
         fileName: name.includes('.') ? name : `${name}.bin`,
         caption: `📦 *MediaFire*\n\n▸ Archivo: ${name}\n▸ Tamaño: ${formatBytes(buffer.length)}\n▸ Enlace: ${url}`,
       });
+    },
+  },
+  {
+    name: 'ytdoc',
+    aliases: ['ytvideo', 'ytmp4doc', 'videodoc'],
+    category: 'downloads',
+    desc: 'Descarga un video de YouTube como documento (calidad completa).',
+    usage: 'ytdoc <enlace>',
+    async execute(ctx) {
+      const url = getUrlOrText(ctx);
+      if (!url) {
+        await ctx.reply(`💡 Uso: *${ctx.prefix}ytdoc* https://youtu.be/...`);
+        return;
+      }
+      await ctx.reply('📁 *Descargando video como documento...*');
+      const r = await youtubeDownload(url, 'video');
+      const buffer = await fetchBuffer(r.urls[0]);
+      if (buffer.length > config.maxFileSize) {
+        await ctx.reply(`⚠️ El video pesa *${formatBytes(buffer.length)}* y supera el límite (${formatBytes(config.maxFileSize)}).\n\n💡 Prueba con *${ctx.prefix}ytmp4* (calidad más liviana).`);
+        return;
+      }
+      const name = (r.title || 'video').replace(/[^\w.\- ]+/g, '_').slice(0, 80);
+      await ctx.send({
+        document: buffer,
+        fileName: `${name}.mp4`,
+        mimetype: 'video/mp4',
+        caption: `📁 *${truncate(r.title || 'Video de YouTube', 200)}*\n${r.author ? `👤 ${r.author}\n` : ''}${r.duration ? `⏱️ ${r.duration}\n` : ''}🔗 ${url}`,
+      });
+    },
+  },
+  {
+    name: 'tiktokaudio',
+    aliases: ['ttaudio', 'tta', 'tiktokmp3'],
+    category: 'downloads',
+    desc: 'Extrae el audio de un TikTok como MP3.',
+    usage: 'tiktokaudio <enlace>',
+    async execute(ctx) {
+      const url = getUrlOrText(ctx);
+      if (!url) {
+        await ctx.reply(`💡 Uso: *${ctx.prefix}tiktokaudio* https://vm.tikTok.com/...`);
+        return;
+      }
+      await ctx.reply('🎵 *Extrayendo el audio...*');
+      const r = await tiktokDownload(url);
+      const music = r.audio || r.music || r.musicUrl;
+      if (!music) throw new Error('No encontré el audio de ese TikTok');
+      await sendMediaUrl(ctx, music, `🎵 *Audio de TikTok*\n\n▸ ${truncate(r.title || 'Audio', 120)}\n▸ 🔗 ${url}`, {
+        kind: 'audio',
+        mimetype: 'audio/mpeg',
+        fileName: 'zenitsu-tiktok.mp3',
+      });
+    },
+  },
+  {
+    name: 'gitclone',
+    aliases: ['repo', 'clonar'],
+    category: 'downloads',
+    desc: 'Descarga un repositorio de GitHub como ZIP.',
+    usage: 'gitclone <enlace de github>',
+    async execute(ctx) {
+      const url = getUrlOrText(ctx);
+      const match = String(url).match(/github\.com\/([\w.\-]+)\/([\w.\-]+)/i);
+      if (!match) {
+        await ctx.reply(`💡 Uso: *${ctx.prefix}gitclone* https://github.com/usuario/repositorio`);
+        return;
+      }
+      const [, user, repo] = match;
+      await ctx.reply('📦 *Clonando el repositorio...*');
+      const zipUrl = `https://codeload.github.com/${user}/${repo}/zip/refs/heads/main`;
+      let buffer;
+      try {
+        buffer = await fetchBuffer(zipUrl);
+      } catch {
+        // Algunos repos usan "master" como rama principal.
+        buffer = await fetchBuffer(`https://codeload.github.com/${user}/${repo}/zip/refs/heads/master`);
+      }
+      if (buffer.length > config.maxFileSize) {
+        throw new Error(`El ZIP pesa ${formatBytes(buffer.length)} y supera el límite (${formatBytes(config.maxFileSize)})`);
+      }
+      await ctx.send({
+        document: buffer,
+        fileName: `${repo}-main.zip`,
+        mimetype: 'application/zip',
+        caption: `📦 *${repo}* de GitHub\n\n▸ 👤 ${user}\n▸ 📏 ${formatBytes(buffer.length)}\n▸ 🔗 https://github.com/${user}/${repo}`,
+      });
+    },
+  },
+  {
+    name: 'wallpaper',
+    aliases: ['fondo', 'wallpapers', 'fondos'],
+    category: 'downloads',
+    desc: 'Descarga fondos de pantalla de cualquier tema.',
+    usage: 'wallpaper <tema>',
+    async execute(ctx) {
+      const query = ctx.text.trim();
+      if (!query) return ctx.reply(`💡 Uso: *${ctx.prefix}wallpaper* anime samurai`);
+      await ctx.reply('🖼️ *Buscando fondos de pantalla...*');
+      const walls = await wallpaperSearch(query, 3);
+      let sent = 0;
+      for (const w of walls) {
+        try {
+          await ctx.send({ image: { url: w.url }, caption: `🖼️ *Fondo ${w.resolution}*\n▸ 🔗 ${w.page}` });
+          sent++;
+        } catch (err) {
+          if (sent === 0) throw err;
+        }
+      }
+      if (!sent) throw new Error('No pude enviar los fondos');
     },
   },
 ];

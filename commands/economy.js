@@ -10,7 +10,7 @@ import {
   randomInt,
   xpForLevel,
 } from '../lib/utils.js';
-import { getTargetJid } from '../lib/targets.js';
+import { getTargetJid, participantJid } from '../lib/targets.js';
 
 const SHOP = {
   pickaxe: { name: '⛏️ Pico de trueno', price: 500, desc: '+50% de recompensa en .mine' },
@@ -276,32 +276,52 @@ export default [
     name: 'top',
     aliases: ['topcoins', 'ranking', 'ricos'],
     category: 'economy',
-    desc: 'Muestra el ranking de los usuarios más ricos.',
+    desc: 'Ranking de los más ricos (solo quien usa el bot aquí).',
     usage: 'top',
     async execute(ctx) {
-      const users = Object.entries(db().users || {})
+      let entries = Object.entries(db().users || {});
+      // En un grupo: SOLO miembros de este grupo que han usado el bot.
+      // (el ranking global mostraría gente de otros grupos: "personas externas")
+      if (ctx.isGroup && ctx.groupMeta?.participants?.length) {
+        const members = new Set(
+          ctx.groupMeta.participants.map((p) => participantJid(p)).filter(Boolean),
+        );
+        entries = entries.filter(([jid]) => members.has(jid));
+      }
+      const users = entries
+        .filter(([, u]) => (u.coins || 0) > 0)
         .map(([jid, u]) => ({ jid, coins: u.coins || 0 }))
         .sort((a, b) => b.coins - a.coins)
         .slice(0, 10);
       if (!users.length) {
-        await ctx.reply('📊 Aún no hay usuarios con monedas.');
+        await ctx.reply('📊 Aún no hay usuarios con monedas por aquí.');
         return;
       }
       const medals = ['🥇', '🥈', '🥉'];
       const list = users
         .map((u, i) => `${medals[i] || `${i + 1}.`} ${userLabel(u.jid)} — *${formatNumber(u.coins)}*`)
         .join('\n');
-      await ctx.reply(`🏆 *TOP 10 MÁS RICOS*\n\n${list}`);
+      const scope = ctx.isGroup ? ' · este grupo' : '';
+      await ctx.reply(`🏆 *TOP 10 MÁS RICOS${scope.toUpperCase()}*\n\n${list}\n\n_Solo cuenta la gente que usa el bot ⚡_`);
     },
   },
   {
     name: 'topxp',
     aliases: ['toplevel', 'rankingxp'],
     category: 'economy',
-    desc: 'Muestra el ranking por experiencia.',
+    desc: 'Ranking por experiencia (solo quien usa el bot aquí).',
     usage: 'topxp',
     async execute(ctx) {
-      const users = Object.entries(db().users || {})
+      let entries = Object.entries(db().users || {});
+      // En un grupo: SOLO miembros de este grupo que han usado el bot.
+      if (ctx.isGroup && ctx.groupMeta?.participants?.length) {
+        const members = new Set(
+          ctx.groupMeta.participants.map((p) => participantJid(p)).filter(Boolean),
+        );
+        entries = entries.filter(([jid]) => members.has(jid));
+      }
+      const users = entries
+        .filter(([, u]) => (u.xp || 0) > 0)
         .map(([jid, u]) => ({ jid, xp: u.xp || 0 }))
         .sort((a, b) => b.xp - a.xp)
         .slice(0, 10);

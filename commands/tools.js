@@ -28,6 +28,8 @@ import {
   httpCheck,
   qrBuffer,
   screenshotBuffer,
+  mailTmCreate,
+  mailTmMessages,
   shortenUrl,
   translateText,
   ttsAudio,
@@ -846,6 +848,68 @@ export default [
     usage: 'timestamp',
     async execute(ctx) {
       await ctx.reply(`⏱️ *Timestamp*\n\n▸ Milisegundos: \`${Date.now()}\`\n▸ Segundos: \`${Math.floor(Date.now() / 1000)}\`\n▸ Fecha: ${formatDate(new Date())}`);
+    },
+  },
+  {
+    name: 'isgd',
+    aliases: ['isgdurl', 'acortar2'],
+    category: 'tools',
+    desc: 'Acorta un enlace con is.gd (alternativa corta).',
+    usage: 'isgd <url>',
+    async execute(ctx) {
+      const url = ctx.args.find((a) => isUrl(a)) || ctx.text.trim();
+      if (!isUrl(url)) {
+        await ctx.reply(`💡 Uso: *${ctx.prefix}isgd* https://ejemplo.com/pagina/muy/larga`);
+        return;
+      }
+      const res = await fetchAny(`https://is.gd/create.php?format=json&url=${encodeURIComponent(url)}`);
+      const data = res.type === 'json' ? res.data : JSON.parse(String(res.data).trim());
+      if (!data?.shorturl) throw new Error('No se pudo acortar el enlace');
+      await ctx.reply(`🔗 *Enlace corto (is.gd)*\n\n▸ Original: ${truncate(url, 120)}\n▸ Corto: ${data.shorturl}`);
+    },
+  },
+  {
+    name: 'tempmail',
+    aliases: ['correotemporal', 'mailtemp', 'fakemail'],
+    category: 'tools',
+    desc: 'Crea un correo temporal para registrar cuentas sin exponer el tuyo.',
+    usage: 'tempmail',
+    async execute(ctx) {
+      await ctx.reply('📬 *Creando tu correo temporal...*');
+      const { address, password } = await mailTmCreate();
+      db().tempMails ||= {};
+      db().tempMails[ctx.senderNumber] = { address, password, at: Date.now() };
+      await ctx.reply(
+        `╭─「 📬 CORREO TEMPORAL 」\n│\n▸ 📧 *${address}*\n│\n▸ ⏳ Los correos que lleguen los ves con *${ctx.prefix}mails*\n▸ 💾 Tu bandeja se guarda 1 día\n╰─ ⚡ _No lo compartas si esperas códigos privados_`,
+      );
+    },
+  },
+  {
+    name: 'mails',
+    aliases: ['bandeja', 'inbox', 'vermails'],
+    category: 'tools',
+    desc: 'Revisa los correos de tu tempmail.',
+    usage: 'mails',
+    async execute(ctx) {
+      const mine = db().tempMails?.[ctx.senderNumber];
+      if (!mine) {
+        await ctx.reply(`📭 No tienes un correo temporal.\n\n_Crea uno con_ *${ctx.prefix}tempmail*`);
+        return;
+      }
+      await ctx.reply('📬 *Revisando tu bandeja...*');
+      const messages = await mailTmMessages(mine.address, mine.password);
+      if (!messages.length) {
+        await ctx.reply(`📭 *${mine.address}*\n\n_Tu bandeja está vacía. Espera un momento y revisa de nuevo._`);
+        return;
+      }
+      const list = messages
+        .slice(0, 10)
+        .map(
+          (m, n) =>
+            `${n + 1}. ✉️ *${truncate(m.subject || '(sin asunto)', 60)}*\n   👤 ${m.from}\n   💬 ${truncate(m.intro || '', 90)}`,
+        )
+        .join('\n\n');
+      await ctx.reply(`╭─「 📬 TU BANDEJA 」\n│\n▸ 📧 ${mine.address}\n│\n${list}\n╰─ ⚡ *${messages.length}* correo(s)`);
     },
   },
 ];

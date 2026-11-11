@@ -15,12 +15,12 @@ import { db, save, saveNow } from './lib/db.js';
 import { cleanTmp, formatDate, jidToNumber, numberToJid, sleep, withWatermark } from './lib/utils.js';
 import { commands } from './commands/index.js';
 import { handleMessage, handleDeletedMessage, messageCache } from './handlers/message.js';
-import { handleGroupParticipants } from './handlers/group.js';
+import { handleGroupParticipants, handleGroupIconChange } from './handlers/group.js';
 import { invalidateGroupMeta, trackSent } from './lib/state.js';
 import { startSavedSubbots } from './lib/subbots.js';
 import { resumeSpamIfEnabled } from './lib/spam.js';
 import { resumeReminders } from './lib/reminders.js';
-import { buildChannelUpdate, channelAutoUpdates, sendToChannel } from './lib/channel.js';
+import { buildChannelUpdate, channelAutoUpdates, refreshChannelName, sendToChannel } from './lib/channel.js';
 import { BOT_UPDATES, updatesId } from './lib/updates.js';
 
 globalThis.__ZENITSU_START__ = Date.now();
@@ -297,6 +297,8 @@ async function start() {
       try {
         if (!ownerNotified) {
           ownerNotified = true; // no repetir en las reconexiones
+          // Nombre del canal (para el banner "Reenviado desde..." de los mensajes).
+          refreshChannelName(sock).catch(() => {});
           const prefix = db().prefix || config.prefix;
           // Actualizaciones vigentes: {prefix} se reemplaza por el prefijo real.
           // El id se calcula sobre la lista CRUDA (sin reemplazar) para que sea
@@ -386,6 +388,10 @@ async function start() {
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
     for (const msg of messages) {
+      // Aviso de cambio de imagen del grupo (stub GROUP_CHANGE_ICON).
+      try {
+        if (msg?.messageStubType === 22) await handleGroupIconChange(sock, msg);
+      } catch {}
       handleMessage(sock, msg).catch((err) => {
         console.error('[MSG]', err?.message || err);
       });
