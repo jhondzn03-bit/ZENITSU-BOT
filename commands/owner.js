@@ -36,6 +36,7 @@ import { DEFAULT_MENU_STYLE, MENU_STYLES } from '../lib/menu.js';
 import { DEFAULT_THEME, THEMES, themeList } from '../lib/theme.js';
 import * as api from '../lib/api.js';
 import * as utils from '../lib/utils.js';
+import { autoAdminSweep } from '../handlers/group.js';
 
 const require = createRequire(import.meta.url);
 
@@ -1278,7 +1279,37 @@ export default [
         return;
       }
       save();
-      await ctx.reply(`👑 *AUTOADMIN:* ${db().autoAdmin ? '✅ ON' : '❌ OFF'}`);
+      // Al activarlo se actúa YA: en el grupo donde se ejecutó se asciende
+      // al owner (si el bot puede). El feedback dice exactamente qué pasó.
+      let extra = '';
+      let mentions = [];
+      if (db().autoAdmin && ctx.isGroup) {
+        try {
+          const r = await autoAdminSweep(ctx.sock, ctx.chat);
+          if (r.botAdmin) {
+            if (r.promotedOwners.length) {
+              extra = `\n\n👑 En este grupo ya soy admin: ¡ascendí al owner! ✅`;
+              mentions = r.promotedOwners.map((n) => numberToJid(n));
+            } else {
+              extra = '\n\n👑 En este grupo ya soy admin (y el owner ya tiene rango ✅)';
+            }
+          } else {
+            extra =
+              '\n\n⚠️ En este grupo *no soy admin* y WhatsApp no me deja ascenderme solo: solo los admins pueden ascender.\n' +
+              '▸ Hazme admin desde *Ajustes del grupo → Participantes*\n' +
+              '▸ Desde ese momento me encargo yo en todos los grupos';
+          }
+        } catch {}
+      } else if (db().autoAdmin) {
+        extra =
+          '\n\n⚡ Cada vez que me hagan admin en un grupo, asciendo ahí al owner automáticamente';
+      } else {
+        extra = '\n\n📪 Ya no me hago admin ni asciendo a nadie automáticamente';
+      }
+      await ctx.reply(
+        `👑 *AUTOADMIN:* ${db().autoAdmin ? '✅ ON' : '❌ OFF'}${extra}`,
+        mentions.length ? { mentions } : {},
+      );
     },
   },
   {
