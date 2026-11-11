@@ -1254,6 +1254,34 @@ export default [
   toggle('antidelete', 'antiDelete', 'Anti eliminar', ['antieliminar']),
   toggle('anticall', 'antiCall', 'Anti llamadas', ['antillamadas']),
   {
+    name: 'autoadmin',
+    aliases: ['adminauto', 'autoadministrarse'],
+    category: 'owner',
+    desc: 'El bot y el owner se vuelven administradores automáticamente en los grupos.',
+    usage: 'autoadmin on|off',
+    owner: true,
+    async execute(ctx) {
+      const value = String(ctx.args[0] || '').toLowerCase();
+      if (!value) {
+        await ctx.reply(
+          `👑 *AUTOADMIN:* ${db().autoAdmin ? '✅ ON' : '❌ OFF'}\n\n` +
+            '▸ Al entrar a un grupo, intento hacerme admin\n' +
+            '▸ Donde ya soy admin, asciendo al owner\n\n' +
+            `💡 Uso: ${ctx.prefix}autoadmin on|off`,
+        );
+        return;
+      }
+      if (['on', 'si', 'sí', '1', 'true', 'activar'].includes(value)) db().autoAdmin = true;
+      else if (['off', 'no', '0', 'false', 'desactivar'].includes(value)) db().autoAdmin = false;
+      else {
+        await ctx.reply('❌ Valor inválido. Usa *on* u *off*.');
+        return;
+      }
+      save();
+      await ctx.reply(`👑 *AUTOADMIN:* ${db().autoAdmin ? '✅ ON' : '❌ OFF'}`);
+    },
+  },
+  {
     name: 'setapi',
     aliases: ['apikey', 'setkey'],
     category: 'owner',

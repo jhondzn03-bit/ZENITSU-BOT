@@ -25,6 +25,39 @@ function lidMapFrom(meta) {
   return map;
 }
 
+// ── .autoadmin ───────────────────────────────────────────────────────────────
+// Intentos silenciosos de ascenso: si WhatsApp rechaza el cambio (quien
+// llama no es admin, o el usuario ya lo es), no se avisa nada.
+
+async function tryPromote(sock, groupJid, jid) {
+  if (!sock?.groupParticipantsUpdate || !groupJid || !jid) return false;
+  try {
+    await sock.groupParticipantsUpdate(groupJid, [jid], 'promote');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Asciende a los owners que estén en el grupo y todavía no sean admin.
+// Devuelve cuántos intentó ascender.
+async function promoteOwners(sock, groupJid, meta, ownerNumbers) {
+  const botNumber = jidToNumber(sock?.user?.id);
+  let made = 0;
+  for (const owner of ownerNumbers || []) {
+    const n = String(owner).replace(/\D/g, '');
+    if (!n || n === botNumber) continue; // el bot se maneja aparte
+    const entry = (meta?.participants || []).find((p) =>
+      [p?.id, p?.phoneNumber, p?.lid].filter(Boolean).map(jidToNumber).includes(n),
+    );
+    if (!entry) continue; // ese owner no está en el grupo
+    if (entry.admin === 'admin' || entry.admin === 'superadmin') continue; // ya es admin
+    await tryPromote(sock, groupJid, toJid(entry.id));
+    made++;
+  }
+  return made;
+}
+
 export async function handleGroupParticipants(sock, update) {
   const { id, participants, action } = update;
   if (!id || !Array.isArray(participants)) return;
@@ -45,14 +78,41 @@ export async function handleGroupParticipants(sock, update) {
   // y no como los dígitos del LID.
   const lidMap = lidMapFrom(meta);
   const resolvePn = (jid) => (jid && lidMap.get(jid)) || jid;
+  // El propio bot también tiene LID (sock.user.lid): se mapea a su número
+  // real para que ninguna mención muestre sus dígitos (@148928729194697...).
+  const ownLid = toJid(sock.user?.lid);
+  const ownJid = toJid(sock.user?.id);
+  if (ownLid && ownJid) {
+    lidMap.set(ownLid.endsWith('@lid') ? ownLid : `${ownLid.replace(/\D/g, '')}@lid`, ownJid);
+  }
 
   for (const participant of participants) {
     // El stub puede traer el participante como objeto {id, server} (LID):
     // se normaliza a JID y se resuelve al número real para la mención.
-    const pJid = resolvePn(toJid(participant));
+    // rawJid conserva el jid tal como lo nombra el grupo (para autoadmin).
+    const rawJid = toJid(participant);
+    const pJid = resolvePn(rawJid);
     if (!pJid) continue;
     const num = jidToNumber(pJid);
     const isBot = num === botNumber;
+
+    // ── .autoadmin: el bot y el owner se hacen admin automáticamente ──────
+    // Solo si el owner lo activó ({prefix}autoadmin on). Todo es silencioso:
+    // WhatsApp puede rechazar el ascenso (p. ej. si el bot no es admin).
+    if (db().autoAdmin) {
+      const ownerNums = (db().owners || []).map((o) => String(o).replace(/\D/g, ''));
+      if (action === 'add' && isBot) {
+        // Me invitaron: intento hacerme admin y asciendo al owner del grupo.
+        await tryPromote(sock, id, rawJid);
+        await promoteOwners(sock, id, meta, ownerNums);
+      } else if (action === 'add' && ownerNums.includes(num)) {
+        // Llegó el owner: lo asciendo si el bot puede.
+        await tryPromote(sock, id, rawJid);
+      } else if (action === 'promote' && isBot) {
+        // Me hicieron admin a mano: asciendo al owner del grupo.
+        await promoteOwners(sock, id, meta, ownerNums);
+      }
+    }
 
     if (action === 'add') {
       if (isBot) {
@@ -81,6 +141,9 @@ export async function handleGroupParticipants(sock, update) {
     }
 
     if (action === 'promote' || action === 'demote') {
+      // Cuando el ascendido/degradado es el propio bot no se avisa: el
+      // dueño ya lo sabe y solo metería ruido en el grupo.
+      if (isBot) continue;
       // Aviso decorado "👻 Nuevo administrador / 🥀 Administrador removido".
       // Se puede apagar por grupo con {prefix}adminnotice off.
       if (!g.adminNotice) continue;
