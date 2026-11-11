@@ -11,6 +11,20 @@ function render(template, { user, group, count, desc }) {
     .replaceAll('{desc}', desc || 'Sin descripción');
 }
 
+// Convierte los participantes de la metadata en un mapa LID → número real.
+// En grupos LID los jids llegan como xxx@lid (dígitos que no son el teléfono):
+// cada participante trae su phoneNumber y su lid para hacer la conversión.
+function lidMapFrom(meta) {
+  const map = new Map();
+  for (const p of meta?.participants || []) {
+    const jid = toJid(p?.id);
+    const pn = toJid(p?.phoneNumber) || (jid && !jid.endsWith('@lid') ? jid : '');
+    const lid = toJid(p?.lid) || (jid?.endsWith('@lid') ? jid : '');
+    if (lid && pn && pn !== lid && !pn.endsWith('@lid')) map.set(lid, pn);
+  }
+  return map;
+}
+
 export async function handleGroupParticipants(sock, update) {
   const { id, participants, action } = update;
   if (!id || !Array.isArray(participants)) return;
@@ -27,11 +41,15 @@ export async function handleGroupParticipants(sock, update) {
   const count = meta?.participants?.length || 0;
   const desc = meta?.desc || '';
   const botNumber = jidToNumber(sock.user?.id);
+  // LID → número real: para que las menciones se vean como @503xxxxx
+  // y no como los dígitos del LID.
+  const lidMap = lidMapFrom(meta);
+  const resolvePn = (jid) => (jid && lidMap.get(jid)) || jid;
 
   for (const participant of participants) {
     // El stub puede traer el participante como objeto {id, server} (LID):
-    // se normaliza a JID string para poder mencionarlo.
-    const pJid = toJid(participant);
+    // se normaliza a JID y se resuelve al número real para la mención.
+    const pJid = resolvePn(toJid(participant));
     if (!pJid) continue;
     const num = jidToNumber(pJid);
     const isBot = num === botNumber;
@@ -67,10 +85,15 @@ export async function handleGroupParticipants(sock, update) {
       // Se puede apagar por grupo con {prefix}adminnotice off.
       if (!g.adminNotice) continue;
       const promote = action === 'promote';
-      const authorJid = toJid(update.author) || toJid(update.participant);
+      // Autor: en grupos LID, authorPn trae el número real. Los DOS usuarios
+      // (el ascendido y quien lo ascendió) se mencionan con @número real.
+      const authorJid =
+        [update.authorPn, update.author, update.participant]
+          .map((a) => resolvePn(toJid(a)))
+          .find((j) => j && !j.endsWith('@lid')) || '';
       const authorNum = jidToNumber(authorJid);
       const botName = db().botName || config.botName;
-      const repo = 'https://github.com/jhondzn03-bit/ZENITSU-BOT';
+      const repo = 'https://github.com/jhondzn03-bit';
       // Quién lo hizo: si fue el bot (.promote/.demote) se acredita al bot.
       const byHuman = authorJid && authorNum !== botNumber && authorNum !== num;
       const byLine = byHuman
@@ -143,7 +166,19 @@ export async function handleGroupIconChange(sock, msg) {
     if (!g.adminNotice) return;
     if (wasSent(msg.key)) return; // lo cambió el propio bot: no nos avisamos
 
-    const authorJid = toJid(msg.key.participant || msg.participant);
+    // El autor también puede llegar como LID: se resuelve al número real.
+    let meta = null;
+    try {
+      meta = await getGroupMetadata(sock, id);
+    } catch {}
+    const lidMap = lidMapFrom(meta);
+    const authorJid =
+      [msg.key.participantAlt, msg.key.participant, msg.participant]
+        .map((a) => {
+          const j = toJid(a);
+          return lidMap.get(j) || j;
+        })
+        .find((j) => j && !j.endsWith('@lid')) || '';
     const num = jidToNumber(authorJid);
     const removed = (msg.messageStubParameters || []).some(
       (p) => String(p).toLowerCase() === 'remove',
