@@ -64,10 +64,12 @@ async function sendMenu(ctx) {
   const botName = store.botName || config.botName;
   // Datos reales del bot para el menú Luna Edition.
   const sys = osInfo();
-  const platform =
-    sys.platform === 'android'
-      ? 'Android · Linux (Termux)'
-      : String(sys.platform || 'Linux');
+  // En Termux osInfo() devuelve "android arm64": se reconoce por prefijo
+  // para mostrar el nombre bonito y no el crudo en el menú.
+  const rawPlatform = String(sys.platform || '');
+  const platform = rawPlatform.startsWith('android')
+    ? 'Android · Linux (Termux)'
+    : rawPlatform || 'Linux';
   // El menú NO muestra el enlace del repositorio.
   const text = buildMenu({
     commands: available,
@@ -243,7 +245,7 @@ export default [
         `▸ CPUs: ${info.cpus}`,
         '',
         '🌩️ *Baileys + WhatsApp*',
-        `▸ Marca de agua: ${config.watermark}`,
+        `▸ Marca de agua: ${config.watermark || 'ninguna'}`,
       ].join('\n');
       await ctx.reply(text);
     },

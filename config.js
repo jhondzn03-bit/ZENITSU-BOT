@@ -9,7 +9,9 @@ export const config = {
   // ─── Identidad ────────────────────────────────────────────────────────────
   botName: 'ZENITSU BOT',
   version: '2.0.0',
-  watermark: '> ZENITSU BOT',
+  // Marca de agua al final de los mensajes. Vacía = mensajes limpios: solo
+  // queda el banner "Reenviado desde el canal" (lib/utils watermarkContent).
+  watermark: '',
 
   // ─── Dueño ────────────────────────────────────────────────────────────────
   ownerNumber: OWNER,

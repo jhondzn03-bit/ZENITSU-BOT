@@ -83,7 +83,7 @@ function banner() {
   console.log(`  👑 Owner:     +${store.owners?.[0] || config.ownerNumber}`);
   console.log(`  ⚙️  Prefijo:   ${store.prefix || config.prefix}`);
   console.log(`  📦 Comandos:  ${commands.length}`);
-  console.log(`  💧 Marca:     ${config.watermark}`);
+  console.log(`  💧 Marca:     ${config.watermark || 'ninguna (solo banner del canal)'}`);
   console.log(`  🕒 Fecha:     ${formatDate(new Date())}`);
   console.log('────────────────────────────────────────────────\n');
 }
