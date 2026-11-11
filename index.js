@@ -307,50 +307,67 @@ async function start() {
           const updateId = updatesId(BOT_UPDATES);
           const isNew = db().lastUpdateNotice?.id !== updateId;
 
-          // ── Aviso al owner: siempre avisa que está conectado.
-          //    Las actualizaciones solo van si son NUEVAS (nunca repite viejas).
-          const ownerNumber = jidToNumber(db().owners?.[0] || config.ownerNumber);
-          const botNumber = jidToNumber(sock.user?.id);
-          if (ownerNumber && ownerNumber !== botNumber) {
-            const header =
-              `⚡ *ZENITSU BOT CONECTADO*\n\n` +
-              `🤖 Bot: ${db().botName || config.botName}\n` +
-              `⚙️ Prefijo: ${prefix}\n` +
-              `📦 Comandos: ${commands.length}\n`;
-            const body = isNew
-              ? `\n🆕 *NUEVAS ACTUALIZACIONES:*\n` +
-                updates.map((u) => `▸ ${u}`).join('\n') +
-                `\n\n_${prefix}menu para verlo todo ⚡_`
-              : `\n✅ _Todo en orden, sin novedades._ ⚡`;
-            const sent = await sock.sendMessage(numberToJid(ownerNumber), {
-              text: withWatermark(header + body),
-            });
-            trackSent(sent);
-          }
-
-          // ── Canal: solo publica si hay actualizaciones NUEVAS.
-          //    Sin novedades no spamea el canal.
-          const channelNew = db().lastChannelNotice?.id !== updateId;
-          if (channelNew && channelAutoUpdates()) {
-            const posted = await sendToChannel(
-              sock,
-              buildChannelUpdate({ prefix, totalCommands: commands.length, updates }),
-            );
-            if (posted) {
-              console.log('📢 Actualización publicada en el canal.');
-              db().lastChannelNotice = { id: updateId, at: Date.now() };
-              save();
+          // Aviso al owner + publicación al canal, con tope de tiempo: si la
+          // conexión abre inestable, un envío colgado no congela el arranque.
+          const notify = async () => {
+            // ── Aviso al owner: siempre avisa que está conectado.
+            //    Las actualizaciones solo van si son NUEVAS (nunca repite viejas).
+            const ownerNumber = jidToNumber(db().owners?.[0] || config.ownerNumber);
+            const botNumber = jidToNumber(sock.user?.id);
+            if (ownerNumber && ownerNumber !== botNumber) {
+              const header =
+                `⚡ *ZENITSU BOT CONECTADO*\n\n` +
+                `🤖 Bot: ${db().botName || config.botName}\n` +
+                `⚙️ Prefijo: ${prefix}\n` +
+                `📦 Comandos: ${commands.length}\n`;
+              const body = isNew
+                ? `\n🆕 *NUEVAS ACTUALIZACIONES:*\n` +
+                  updates.map((u) => `▸ ${u}`).join('\n') +
+                  `\n\n_${prefix}menu para verlo todo ⚡_`
+                : `\n✅ _Todo en orden, sin novedades._ ⚡`;
+              const sent = await sock.sendMessage(numberToJid(ownerNumber), {
+                text: withWatermark(header + body),
+              });
+              trackSent(sent);
+              // Se marca YA al owner como avisado: aunque el canal falle
+              // después, no se le reenvían las mismas novedades.
+              if (isNew) {
+                db().lastUpdateNotice = { id: updateId, at: Date.now() };
+                save();
+              }
             }
-          }
 
-          // Marca las novedades como avisadas al owner (aunque el canal esté
-          // apagado, no se repiten en el próximo reinicio).
-          if (isNew) {
-            db().lastUpdateNotice = { id: updateId, at: Date.now() };
-            save();
-          }
+            // ── Canal: solo publica si hay actualizaciones NUEVAS.
+            //    Sin novedades no spamea el canal.
+            const channelNew = db().lastChannelNotice?.id !== updateId;
+            if (channelNew && channelAutoUpdates()) {
+              const posted = await sendToChannel(
+                sock,
+                buildChannelUpdate({ prefix, totalCommands: commands.length, updates }),
+              );
+              if (posted) {
+                console.log('📢 Actualización publicada en el canal.');
+                db().lastChannelNotice = { id: updateId, at: Date.now() };
+                save();
+              }
+            }
+          };
+          const notifyP = notify();
+          // Un rechazo tardío (cuando el timeout ya resolvió la carrera) no
+          // puede quedar sin manejar: tumbaría el proceso.
+          notifyP.catch(() => {});
+          await Promise.race([
+            notifyP,
+            sleep(25000).then(() => {
+              throw new Error('aviso de arranque sin respuesta');
+            }),
+          ]);
         }
-      } catch {}
+      } catch {
+        // El aviso no salió (conexión que abre inestable): se reintenta en
+        // la próxima reconexión en vez de perderse para siempre.
+        ownerNotified = false;
+      }
     }
 
     if (connection === 'close') {
