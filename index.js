@@ -11,7 +11,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import qrcode from 'qrcode-terminal';
 import { config, ROOT } from './config.js';
-import { db, saveNow } from './lib/db.js';
+import { db, save, saveNow } from './lib/db.js';
 import { cleanTmp, formatDate, jidToNumber, numberToJid, sleep, withWatermark } from './lib/utils.js';
 import { commands } from './commands/index.js';
 import { handleMessage, handleDeletedMessage, messageCache } from './handlers/message.js';
@@ -21,6 +21,7 @@ import { startSavedSubbots } from './lib/subbots.js';
 import { resumeSpamIfEnabled } from './lib/spam.js';
 import { resumeReminders } from './lib/reminders.js';
 import { buildChannelUpdate, channelAutoUpdates, sendToChannel } from './lib/channel.js';
+import { BOT_UPDATES, updatesId } from './lib/updates.js';
 
 globalThis.__ZENITSU_START__ = Date.now();
 globalThis.__ZENITSU_COMMANDS__ = commands;
@@ -297,38 +298,54 @@ async function start() {
         if (!ownerNotified) {
           ownerNotified = true; // no repetir en las reconexiones
           const prefix = db().prefix || config.prefix;
-          const updates = [
-            `🧠 *${prefix}opencode* — IA que ejecuta comandos en lenguaje natural (ej: ${prefix}opencode bájame la canción X)`,
-            `📢 ${prefix}canal — publico mis actualizaciones en tu canal de WhatsApp`,
-            `🔎 ${prefix}ytsearch / ${prefix}ttsearch — buscan YouTube/TikTok y eliges por número`,
-            `🔥 +18 con lista: ${prefix}pornhub <nombre> → elige con ${prefix}pornhub 3`,
-            `⏰ ${prefix}remind — recordatorios persistentes`,
-            `🎮 ${prefix}steam · 📱 ${prefix}nowa · 📝 ${prefix}readmore`,
-            `🎨 Menú: 12 estilos con rejilla ordenada (${prefix}setmenu lista)`,
-          ];
+          // Actualizaciones vigentes: {prefix} se reemplaza por el prefijo real.
+          // El id se calcula sobre la lista CRUDA (sin reemplazar) para que sea
+          // estable aunque cambie el prefijo del bot.
+          const updates = BOT_UPDATES.map((u) => u.replace(/\{prefix\}/g, prefix));
+          const updateId = updatesId(BOT_UPDATES);
+          const isNew = db().lastUpdateNotice?.id !== updateId;
 
-          // Aviso al owner.
+          // ── Aviso al owner: siempre avisa que está conectado.
+          //    Las actualizaciones solo van si son NUEVAS (nunca repite viejas).
           const ownerNumber = jidToNumber(db().owners?.[0] || config.ownerNumber);
           const botNumber = jidToNumber(sock.user?.id);
           if (ownerNumber && ownerNumber !== botNumber) {
+            const header =
+              `⚡ *ZENITSU BOT CONECTADO*\n\n` +
+              `🤖 Bot: ${db().botName || config.botName}\n` +
+              `⚙️ Prefijo: ${prefix}\n` +
+              `📦 Comandos: ${commands.length}\n`;
+            const body = isNew
+              ? `\n🆕 *NUEVAS ACTUALIZACIONES:*\n` +
+                updates.map((u) => `▸ ${u}`).join('\n') +
+                `\n\n_${prefix}menu para verlo todo ⚡_`
+              : `\n✅ _Todo en orden, sin novedades._ ⚡`;
             const sent = await sock.sendMessage(numberToJid(ownerNumber), {
-              text: withWatermark(
-                `⚡ *ZENITSU BOT CONECTADO*\n\n🤖 Bot: ${db().botName || config.botName}\n⚙️ Prefijo: ${prefix}\n📦 Comandos: ${commands.length}\n\n` +
-                  `🆕 *ÚLTIMAS ACTUALIZACIONES:*\n` +
-                  updates.map((u) => `▸ ${u}`).join('\n') +
-                  `\n\n_${prefix}menu para ver el nuevo diseño ⚡_`,
-              ),
+              text: withWatermark(header + body),
             });
             trackSent(sent);
           }
 
-          // Publicación en el canal del bot (si está activado).
-          if (channelAutoUpdates()) {
+          // ── Canal: solo publica si hay actualizaciones NUEVAS.
+          //    Sin novedades no spamea el canal.
+          const channelNew = db().lastChannelNotice?.id !== updateId;
+          if (channelNew && channelAutoUpdates()) {
             const posted = await sendToChannel(
               sock,
               buildChannelUpdate({ prefix, totalCommands: commands.length, updates }),
             );
-            if (posted) console.log('📢 Actualización publicada en el canal.');
+            if (posted) {
+              console.log('📢 Actualización publicada en el canal.');
+              db().lastChannelNotice = { id: updateId, at: Date.now() };
+              save();
+            }
+          }
+
+          // Marca las novedades como avisadas al owner (aunque el canal esté
+          // apagado, no se repiten en el próximo reinicio).
+          if (isNew) {
+            db().lastUpdateNotice = { id: updateId, at: Date.now() };
+            save();
           }
         }
       } catch {}

@@ -18,6 +18,8 @@ import { buildMenu, buildCommandHelp } from '../lib/menu.js';
 import { serializeMessage } from '../lib/serialize.js';
 import { trackSent, wasSent, getGroupMetadata } from '../lib/state.js';
 import { findParticipant } from '../lib/targets.js';
+import { handleCustomCommand } from '../lib/customcmd.js';
+import { decorateText } from '../lib/theme.js';
 import { aiText } from '../lib/api.js';
 
 const messageCache = new Map();
@@ -181,7 +183,11 @@ async function makeContext(sock, msg, m, extra = {}) {
 
   const reply = async (text, extraContent = {}) => {
     const { options = {}, ...content } = extraContent || {};
-    return send({ text: withWatermark(text), ...content }, options);
+    // Tema global: solo texto puro (sin imágenes/archivos) y sin menús ya
+    // enmarcados. Si no hay tema activo, decorateText devuelve lo mismo.
+    const isPlainText = Object.keys(content).length === 0;
+    const themed = isPlainText ? decorateText(text, db().theme) : text;
+    return send({ text: withWatermark(themed), ...content }, options);
   };
 
   const react = async (emoji, key = m.key) => {
@@ -472,6 +478,17 @@ export async function handleMessage(sock, msg) {
   const commandName = rawCommand.toLowerCase();
   const cmd = commandMap.get(commandName);
   if (!cmd) {
+    // Comandos personalizados del grupo: .stock, .addstock, .setstock, .delstock
+    try {
+      const handled = await handleCustomCommand(ctx, commandName, args);
+      if (handled) return;
+    } catch (err) {
+      console.error('[CUSTOMCMD]', err);
+      try {
+        await ctx.reply(`⚠️ No pude ejecutar *${prefix}${commandName}*: ${err.message}`);
+      } catch {}
+      return;
+    }
     // ¿Quisiste decir...? — solo si el comando tipeado se parece a uno real,
     // para no responder ante cualquier texto que empiece con el prefijo.
     const suggestion = suggestCommand(commandName, prefix);

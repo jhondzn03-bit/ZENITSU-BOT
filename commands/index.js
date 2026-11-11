@@ -13,8 +13,9 @@ import spam from './spam.js';
 import newstuff from './newstuff.js';
 import channel from './channel.js';
 import opencode from './opencode.js';
+import customcmd from './customcmd.js';
 
-const modules = [general, owner, admin, tools, downloads, ai, anime, fun, economy, info, extra, spam, newstuff, channel, opencode];
+const modules = [general, owner, admin, tools, downloads, ai, anime, fun, economy, info, extra, spam, newstuff, channel, opencode, customcmd];
 
 export const commands = modules.flat().filter((c) => c && c.name);
 

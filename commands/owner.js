@@ -33,6 +33,7 @@ import {
 import { getTargetJid, findParticipant } from '../lib/targets.js';
 import { gifToMp4 } from '../lib/sticker.js';
 import { DEFAULT_MENU_STYLE, MENU_STYLES } from '../lib/menu.js';
+import { DEFAULT_THEME, THEMES, themeList } from '../lib/theme.js';
 import * as api from '../lib/api.js';
 import * as utils from '../lib/utils.js';
 
@@ -303,6 +304,60 @@ export default [
       db().menuLink = value;
       save();
       await ctx.reply(`✅ Enlace del menú actualizado:\n\n🔗 ${value}`);
+    },
+  },
+  {
+    name: 'settheme',
+    aliases: ['tema', 'theme', 'settema', 'estilototal'],
+    category: 'owner',
+    desc: 'Cambia el tema global: menú + estilo de todas las respuestas.',
+    usage: 'settheme <estilo|off|lista>',
+    owner: true,
+    async execute(ctx) {
+      const style = String(ctx.args[0] || '').toLowerCase();
+      const currentTheme = db().theme || DEFAULT_THEME;
+      const currentMenu = db().menuStyle || DEFAULT_MENU_STYLE;
+      const list = themeList(currentTheme === 'off' ? '' : currentTheme);
+
+      if (!style || ['lista', 'list', 'ayuda', 'help'].includes(style)) {
+        await ctx.reply(
+          `🎨 *TEMAS DEL BOT*\n\n` +
+            `${list}\n\n` +
+            `▸ Tema actual: *${currentTheme}*\n` +
+            `▸ Estilo del menú: *${currentMenu}*\n\n` +
+            `💡 Cambiar: *${ctx.prefix}settheme zenitsu*\n` +
+            `💡 Apagar marcos: *${ctx.prefix}settheme off*`,
+        );
+        return;
+      }
+
+      if (['off', 'ninguno', 'none', 'apagado'].includes(style)) {
+        db().theme = 'off';
+        save();
+        await ctx.reply('✅ Marcos de las respuestas *apagados*. El menú conserva su estilo.');
+        return;
+      }
+
+      if (!THEMES[style]) {
+        await ctx.reply(
+          `❌ Tema *${style}* no existe.\n\n${list}\n\n💡 Uso: *${ctx.prefix}settheme galactico*`,
+        );
+        return;
+      }
+
+      // Un solo comando cambia TODO: menú + respuestas.
+      db().theme = style;
+      db().menuStyle = style;
+      save();
+      const meta = THEMES[style];
+      // Este mismo mensaje ya sale con el tema nuevo: es la vista previa.
+      await ctx.reply(
+        `✅ *TEMA CAMBIADO:* ${meta.emoji} *${meta.label}*\n\n` +
+          `✨ Este mensaje ya es una *vista previa*: así se verán todas mis respuestas.\n\n` +
+          `▸ Menú nuevo: *${ctx.prefix}menu*\n` +
+          `▸ Otro tema: *${ctx.prefix}settheme lista*\n` +
+          `▸ Apagar marcos: *${ctx.prefix}settheme off*`,
+      );
     },
   },
   {
