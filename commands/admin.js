@@ -15,6 +15,7 @@ import {
   isGroupAdmin,
   participantJid,
 } from '../lib/targets.js';
+import { DEFAULT_WELCOME, DEFAULT_GOODBYE } from '../handlers/group.js';
 
 async function getImageBuffer(ctx) {
   if (ctx.quoted?.mediaType === 'image') return ctx.downloadQuoted();
@@ -552,8 +553,14 @@ export default [
       const text = ctx.text.trim();
       if (!text) {
         await ctx.reply(
-          `👋 *Bienvenida actual:*\n\n${g.welcomeText || '_Mensaje predeterminado_'}\n\n💡 Variables: {user} {group} {count} {desc}\n\n💡 Uso: ${ctx.prefix}setwelcome Hola {user}, bienvenido a {group}`,
+          `👋 *Bienvenida actual* (${g.welcomeText ? 'personalizada' : '⚡ Zenitsu, predeterminada'}):\n\n${g.welcomeText || DEFAULT_WELCOME}\n\n💡 Variables: {user} {group} {count} {desc}\n💡 Restaura la de Zenitsu: ${ctx.prefix}setwelcome reset\n💡 Uso: ${ctx.prefix}setwelcome Hola {user}, bienvenido a {group}`,
         );
+        return;
+      }
+      if (/^(reset|zenitsu|default|predeterminada|restaurar)$/i.test(text)) {
+        delete g.welcomeText;
+        save();
+        await ctx.reply('⚡ Bienvenida *Zenitsu* restaurada.\n\n(Prueba a que entre alguien, o sácalo y reinvítalo)');
         return;
       }
       g.welcomeText = text;
@@ -574,8 +581,14 @@ export default [
       const text = ctx.text.trim();
       if (!text) {
         await ctx.reply(
-          `👋 *Despedida actual:*\n\n${g.goodbyeText || '_Mensaje predeterminado_'}\n\n💡 Variables: {user} {group} {count}\n\n💡 Uso: ${ctx.prefix}setgoodbye Adiós {user}`,
+          `👋 *Despedida actual* (${g.goodbyeText ? 'personalizada' : '⚡ Zenitsu, predeterminada'}):\n\n${g.goodbyeText || DEFAULT_GOODBYE}\n\n💡 Variables: {user} {group} {count}\n💡 Restaura la de Zenitsu: ${ctx.prefix}setgoodbye reset\n💡 Uso: ${ctx.prefix}setgoodbye Adiós {user}`,
         );
+        return;
+      }
+      if (/^(reset|zenitsu|default|predeterminada|restaurar)$/i.test(text)) {
+        delete g.goodbyeText;
+        save();
+        await ctx.reply('⚡ Despedida *Zenitsu* restaurada.');
         return;
       }
       g.goodbyeText = text;
