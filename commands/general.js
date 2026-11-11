@@ -13,6 +13,7 @@ import {
   withWatermark,
 } from '../lib/utils.js';
 import { buildMenu, buildCommandHelp } from '../lib/menu.js';
+import { listCustom } from '../lib/customcmd.js';
 import { participantJid } from '../lib/targets.js';
 
 const ZENITSU_QUOTES = [
@@ -44,6 +45,20 @@ async function sendMenu(ctx) {
       (c.category !== 'owner' || isOwner) &&
       (!hidePremium || !isPremiumCmd(c)),
   );
+  // En un grupo, el menú también muestra los comandos de VENTAS propios
+  // de ese grupo (los creados con .crearcmd).
+  if (ctx.isGroup) {
+    try {
+      const customs = listCustom(ctx.chat);
+      for (const c of customs) {
+        available.push({
+          name: c.name,
+          category: 'ventas',
+          desc: (c.content || 'comando de este grupo').slice(0, 40),
+        });
+      }
+    } catch {}
+  }
   const botName = store.botName || config.botName;
   // El menú NO muestra el enlace del repositorio.
   const text = buildMenu({

@@ -1,6 +1,6 @@
 import { createCustom, creatorHelp, customMenuText, deleteCustom } from '../lib/customcmd.js';
 
-// ─── Comandos personalizados por grupo ────────────────────────────────────
+// ─── Comandos de VENTAS (personalizados por grupo) ────────────────────────
 // .crearcmd stock → crea .addstock .setstock .stock .delstock
 // .delcmd stock   → borra la familia completa
 // .menucmd        → lista los comandos del grupo
@@ -10,7 +10,7 @@ export default [
   {
     name: 'crearcmd',
     aliases: ['crearcomando', 'nuevocomando', 'addcmd'],
-    category: 'admin',
+    category: 'ventas',
     desc: 'Crea un comando personalizado del grupo (texto e imágenes).',
     usage: 'crearcmd <nombre>',
     group: true,
@@ -45,7 +45,7 @@ export default [
   {
     name: 'delcmd',
     aliases: ['borrarcomando', 'delcomando'],
-    category: 'admin',
+    category: 'ventas',
     desc: 'Borra un comando personalizado completo del grupo.',
     usage: 'delcmd <nombre>',
     group: true,
@@ -70,7 +70,7 @@ export default [
   {
     name: 'menucmd',
     aliases: ['comandosgrupo', 'listacmd', 'customcmds'],
-    category: 'admin',
+    category: 'ventas',
     desc: 'Muestra los comandos personalizados del grupo.',
     usage: 'menucmd',
     group: true,
