@@ -12,7 +12,7 @@ import {
   sleep,
   withWatermark,
 } from '../lib/utils.js';
-import { buildMenu, buildCommandHelp } from '../lib/menu.js';
+import { buildMenu, buildCommandHelp, DEFAULT_MENU_STYLE } from '../lib/menu.js';
 import { listCustom } from '../lib/customcmd.js';
 import { participantJid } from '../lib/targets.js';
 
@@ -42,6 +42,8 @@ async function sendMenu(ctx) {
   const available = (ctx.commands || []).filter(
     (c) =>
       !c.hidden &&
+      // Los comandos +18 fueron retirados: ni en el menú ni contados.
+      c.category !== 'nsfw' &&
       (c.category !== 'owner' || isOwner) &&
       (!hidePremium || !isPremiumCmd(c)),
   );
@@ -60,6 +62,12 @@ async function sendMenu(ctx) {
     } catch {}
   }
   const botName = store.botName || config.botName;
+  // Datos reales del bot para el menú Luna Edition.
+  const sys = osInfo();
+  const platform =
+    sys.platform === 'android'
+      ? 'Android · Linux (Termux)'
+      : String(sys.platform || 'Linux');
   // El menú NO muestra el enlace del repositorio.
   const text = buildMenu({
     commands: available,
@@ -71,8 +79,18 @@ async function sendMenu(ctx) {
     uptime: getUptime(),
     totalCommands: available.length,
     menuLink: store.menuLink || '',
-    style: store.menuStyle || 'galactico',
+    style: store.menuStyle || DEFAULT_MENU_STYLE,
+    version: config.version,
+    ownerName: config.ownerName,
+    platform,
+    senderNumber: ctx.senderNumber,
   });
+  // El saludo del menú menciona de verdad a quien lo pidió.
+  const mentionTag = ctx.senderNumber ? `@${ctx.senderNumber}` : '';
+  const mentions =
+    mentionTag && text.includes(mentionTag)
+      ? [ctx.senderJid || ctx.sender].filter(Boolean)
+      : undefined;
   // Aviso premium al final del menú de un subbot normal.
   const footerNote = hidePremium
     ? `\n\n💎 *Subbot normal:* las 📥 descargas y la 🤖 IA son PREMIUM.\nPide el tuyo con *${ctx.prefix}upgrade*.`
@@ -86,16 +104,16 @@ async function sendMenu(ctx) {
       const isVideo =
         store.bannerType === 'video' || /\.(mp4|webm)$/i.test(String(banner));
       if (isVideo) {
-        await ctx.send({ video: buffer, gifPlayback: true, caption: text + footerNote });
+        await ctx.send({ video: buffer, gifPlayback: true, caption: text + footerNote, mentions });
       } else {
-        await ctx.send({ image: buffer, caption: text + footerNote });
+        await ctx.send({ image: buffer, caption: text + footerNote, mentions });
       }
       return;
     } catch (err) {
       console.error('[MENU] No se pudo enviar el banner con el menú:', err?.message || err);
     }
   }
-  await ctx.send({ text: text + footerNote });
+  await ctx.send({ text: text + footerNote, mentions });
 }
 
 export default [
@@ -110,6 +128,11 @@ export default [
         const target = ctx.commandMap.get(ctx.args[0].replace(/^[.!/]/, '').toLowerCase());
         if (!target) {
           await ctx.reply(`❌ No existe el comando *${ctx.args[0]}*.`);
+          return;
+        }
+        // Los comandos +18 están retirados: su ayuda tampoco se muestra.
+        if (target.category === 'nsfw') {
+          await ctx.reply('🌙 *Comando retirado* ✨\n\nEste contenido ya no forma parte del bot.');
           return;
         }
         await ctx.reply(

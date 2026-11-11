@@ -50,6 +50,7 @@ function buildCatalog(ctx) {
     if (cmd.hidden) continue;
     if (cmd.owner && !ctx.isOwner) continue;
     if (cmd.name === 'opencode') continue; // sin recursión
+    if (cmd.category === 'nsfw') continue; // retirados: la IA no los ofrece
     if (!byCategory.has(cmd.category)) byCategory.set(cmd.category, []);
     const desc = String(cmd.desc || '').split(/[.\n]/)[0].slice(0, 34).trim();
     byCategory.get(cmd.category).push(`${ctx.prefix}${cmd.name}${desc ? `(${desc})` : ''}`);

@@ -14,6 +14,7 @@ export const config = {
   // ─── Dueño ────────────────────────────────────────────────────────────────
   ownerNumber: OWNER,
   owners: [OWNER, '50369635962'],
+  ownerName: 'Jhonathan',
 
   // ─── Prefijo ──────────────────────────────────────────────────────────────
   prefix: '.',
