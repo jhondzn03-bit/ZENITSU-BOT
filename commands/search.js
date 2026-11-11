@@ -343,7 +343,7 @@ const search = [
     name: 'peliculasgratis',
     aliases: ['peliculagrat', 'moviefree', 'cinelibre', 'clasicos'],
     category: 'search',
-    desc: 'Descarga películas clásicas de DOMINIO PÚBLICO (100% legal).',
+    desc: 'Descarga películas clásicas de dominio público como VIDEO (100% legal).',
     usage: 'peliculasgratis <nombre | número>',
     async execute(ctx) {
       const arg = ctx.text.trim();
@@ -362,7 +362,17 @@ const search = [
         }
         await ctx.reply(`⏬ *Preparando "${truncate(pick.title, 40)}"...*`);
         const { files, title } = await archiveMovieFiles(pick.identifier);
-        const video = files[0]; // el más liviano
+        // WhatsApp solo reproduce como VIDEO los archivos MP4/M4V. Si la
+        // película solo existe en .ogv/.webm, se dan los enlaces en su lugar.
+        const video = files.find((f) => /\.(mp4|m4v)$/i.test(f.name));
+        if (!video) {
+          const alt = files[0]; // el más liviano
+          const ext = (alt.name.split('.').pop() || 'video').toLowerCase();
+          await ctx.reply(
+            `🎬 *${truncate(title, 50)}* solo tiene formato de archivo (\`.${ext}\`), que WhatsApp no reproduce.\n\n▸ 🎥 Mírala online: ${pick.url}\n▸ ⏬ Descárgala aquí:\n${alt.url}`,
+          );
+          return;
+        }
         const mb = video.size / (1024 * 1024);
         if (mb > 65) {
           // Demasiado pesado para WhatsApp: mando el enlace directo.
@@ -373,9 +383,10 @@ const search = [
         }
         await ctx.reply(`📥 *Descargando ${mb.toFixed(1)} MB y subiendo... (paciencia)*`);
         const buffer = await fetchBuffer(video.url);
+        // Se envía como VIDEO para que se reproduzca directo en el chat:
+        // los documentos no tienen reproductor y pueden verse sospechosos.
         await ctx.send({
-          document: buffer,
-          fileName: `${pick.identifier}.mp4`,
+          video: buffer,
           mimetype: 'video/mp4',
           caption: `🎬 *${truncate(title, 50)}*\n\n▸ 📅 ${pick.year || 'Clásico'} · ${formatNumber(pick.downloads)} descargas\n▸ 100% legal: dominio público\n▸ 🔗 ${pick.url}`,
         });
@@ -384,7 +395,7 @@ const search = [
 
       if (!arg) {
         await ctx.reply(
-          `💡 Uso: *${ctx.prefix}peliculasgratis* sherlock holmes\n\n_Choosing: buscar → tecla número → descarga._\n_Son películas clásicas de dominio público (Chaplin, terror retro, noir...)_`,
+          `💡 Uso: *${ctx.prefix}peliculasgratis* sherlock holmes\n\n_Se envían como video 🎬 · Elige: buscar → número → descarga._\n_Son películas clásicas de dominio público (Chaplin, terror retro, noir...)_`,
         );
         return;
       }
