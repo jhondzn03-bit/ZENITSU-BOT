@@ -3,6 +3,7 @@ import { db, getGroup, save } from '../lib/db.js';
 import { jidToNumber, numberToJid, toJid, withWatermark } from '../lib/utils.js';
 import { getGroupMetadata, invalidateGroupMeta, trackSent, wasSent } from '../lib/state.js';
 import { effectiveSettings, subbotForSock } from '../lib/settings.js';
+import { sendStickerBatch } from '../lib/stickers.js';
 
 // ─── Bienvenida y despedida (edición Zenitsu) ────────────────────────────────
 // {user} llega ya resuelto: @número real (con ping) o el nombre del contacto.
@@ -224,6 +225,46 @@ async function notifyOwnerAdminRejected(sock, groupJid, groupName) {
   }
 }
 
+// ── Stickers pendientes de admin (.stickercanal <link>) ───────────────────
+// El owner pidió mandar stickers a un grupo por link y el bot no era admin.
+// Al ascenderlo, se avisa en el grupo y se mandan los stickers DE VERDAD.
+export async function runPendingStickerJob(sock, groupJid, groupName) {
+  const data = db();
+  const job = data.pendingStickerJobs?.[groupJid];
+  if (!job) return;
+  // Los trabajos caducan a las 24h para no dispararse por sorpresa.
+  if (!Number(job.at) || Date.now() - Number(job.at) > 24 * 60 * 60 * 1000) {
+    delete data.pendingStickerJobs[groupJid];
+    save();
+    return;
+  }
+  delete data.pendingStickerJobs[groupJid];
+  save();
+
+  const count = Math.min(50, Math.max(1, Number.parseInt(job.count, 10) || 50));
+  try {
+    const sent = await sock.sendMessage(groupJid, {
+      text: withWatermark(
+        `⚡ *¡YA SOY ADMIN!* ⚡\n\n` +
+          `🌩️ Como lo prometí: aquí van los *${count} stickers* de *${groupName || 'este grupo'}*.`,
+      ),
+    });
+    trackSent(sent);
+  } catch {}
+
+  const r = await sendStickerBatch(sock, groupJid, count);
+  try {
+    const rep = await sock.sendMessage(groupJid, {
+      text: withWatermark(
+        `✅ *STICKERS ENVIADOS:* *${r.sent}/${count}*` +
+          (r.failed ? `\n⚠️ Fallidos: ${r.failed}` : '') +
+          `\n\n🌩️ _Respiración del Trueno, completada._`,
+      ),
+    });
+    trackSent(rep);
+  } catch {}
+}
+
 export async function handleGroupParticipants(sock, update) {
   const { id, participants, action } = update;
   if (!id || !Array.isArray(participants)) return;
@@ -298,6 +339,11 @@ export async function handleGroupParticipants(sock, update) {
       } else if (action === 'promote' && isBot) {
         // Me hicieron admin a mano: asciendo al owner del grupo.
         await promoteOwners(sock, id, meta, ownerNums);
+        // Si había stickers pendientes (.stickercanal <link>), se mandan
+        // AHORA en el grupo (sin bloquear el resto del evento).
+        runPendingStickerJob(sock, id, groupName).catch((err) =>
+          console.error('[STICKERS]', err?.message || err),
+        );
       }
     }
 

@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import {
   channelAutoUpdates,
   getChannelInfo,
@@ -8,48 +7,173 @@ import {
   setChannelAutoUpdates,
 } from '../lib/channel.js';
 import { db, save } from '../lib/db.js';
-import { fetchBuffer, fetchJson, sleep, withWatermark } from '../lib/utils.js';
-import { mediaToSticker } from '../lib/sticker.js';
+import { extractInviteCode } from '../lib/spam.js';
+import { jidToNumber, sleep, toJid, withWatermark } from '../lib/utils.js';
+import { getGroupMetadata, invalidateGroupMeta, trackSent } from '../lib/state.js';
+import { sendStickerBatch } from '../lib/stickers.js';
 
-// ─── Stickers aleatorios para el canal ────────────────────────────────────
-// Se usan imágenes SFW de nekos.best y se convierten a WebP. El historial de
-// hashes evita repetir stickers entre ejecuciones.
+// ─── Stickers aleatorios ──────────────────────────────────────────────────
+// La lógica de envío real vive en lib/stickers.js (se reutiliza para mandar
+// al canal o a un grupo por link cuando el bot ya es admin).
 
-const STICKER_CATEGORIES = ['waifu', 'neko', 'kitsune', 'husbando'];
-
-function shuffle(list) {
-  const copy = [...list];
-  for (let i = copy.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [copy[i], copy[j]] = [copy[j], copy[i]];
+// ── .stickercanal <link de grupo> ──────────────────────────────────────────
+// El bot entra al grupo (si no está); si no es admin pide "hazme admin" y
+// deja el trabajo pendiente: en cuanto lo asciendan, avisa en el grupo y
+// manda los stickers DE VERDAD. Si ya es admin, avisa y los manda al toque.
+async function sendStickersToLinkedGroup(ctx, link, count) {
+  const code = extractInviteCode(link);
+  if (!code) {
+    await ctx.reply(
+      withWatermark(
+        '❌ Ese link de grupo no es válido.\n\n💡 Copia el enlace completo: https://chat.whatsapp.com/...',
+      ),
+    );
+    return;
   }
-  return copy;
-}
 
-async function collectImageUrls(limit) {
-  const urls = [];
-  const seen = new Set();
-  for (let round = 0; round < 8 && urls.length < limit; round++) {
-    for (const category of shuffle(STICKER_CATEGORIES)) {
-      if (urls.length >= limit) break;
+  await ctx.reply(withWatermark('🔎 *REVISANDO EL GRUPO...*'));
+
+  // Nombre del grupo (si WhatsApp deja consultarlo).
+  let info = null;
+  try {
+    info = await ctx.sock.groupGetInviteInfo(code);
+  } catch {}
+
+  // ¿Ya estoy dentro? (por id o por nombre).
+  let group = null;
+  try {
+    const groups = await ctx.sock.groupFetchAllParticipating();
+    if (info?.id) group = groups?.[info.id] || null;
+    const wanted = String(info?.subject || '').trim().toLowerCase();
+    if (!group && wanted) {
+      group =
+        Object.values(groups || {}).find(
+          (g) => String(g?.subject || '').trim().toLowerCase() === wanted,
+        ) || null;
+    }
+  } catch {}
+
+  // Entrar con el link.
+  if (!group) {
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 3 && !group; attempt++) {
       try {
-        const data = await fetchJson(
-          `https://nekos.best/api/v2/${category}?amount=20`,
-          {},
-          20000,
-        );
-        for (const item of data?.results || []) {
-          const url = item?.url;
-          if (!url || seen.has(url)) continue;
-          seen.add(url);
-          urls.push(url);
-          if (urls.length >= limit) break;
+        const jid = await ctx.sock.groupAcceptInvite(code);
+        group = { id: jid, subject: info?.subject || '' };
+      } catch (err) {
+        lastErr = err;
+        const msg = String(err?.message || '');
+        if (/already|conflict|409/i.test(msg)) {
+          try {
+            const groups = await ctx.sock.groupFetchAllParticipating();
+            const wanted = String(info?.subject || '').trim().toLowerCase();
+            group =
+              (wanted &&
+                Object.values(groups || {}).find(
+                  (g) => String(g?.subject || '').trim().toLowerCase() === wanted,
+                )) ||
+              null;
+          } catch {}
+          break;
         }
-      } catch {}
+        if (attempt < 3) await sleep(1500 * attempt);
+      }
+    }
+    if (!group) {
+      await ctx.reply(
+        withWatermark(
+          `❌ No pude unirme al grupo.\n\n` +
+            (lastErr ? `▸ ${String(lastErr.message || lastErr)}\n\n` : '') +
+            `💡 Verifica que el link siga activo.`,
+        ),
+      );
+      return;
     }
   }
-  return urls;
+
+  const groupJid = group.id;
+  const groupName = group.subject || info?.subject || 'el grupo';
+
+  // Espera corta: si .autoadmin está prendido, el bot puede ascenderse solo
+  // justo al entrar. Se revisa la metadata fresca después.
+  await sleep(2500);
+  invalidateGroupMeta(groupJid);
+  const meta = await getGroupMetadata(ctx.sock, groupJid).catch(() => null);
+  const botNum = jidToNumber(ctx.sock.user?.id);
+  const botLidRaw = toJid(ctx.sock.user?.lid);
+  const botLidNumber = botLidRaw
+    ? jidToNumber(botLidRaw.endsWith('@lid') ? botLidRaw : `${botLidRaw.replace(/\D/g, '')}@lid`)
+    : '';
+  const me = (meta?.participants || []).find((p) => {
+    const ids = [p?.id, p?.lid, p?.phoneNumber, p?.pn]
+      .filter(Boolean)
+      .map(jidToNumber);
+    return ids.includes(botNum) || (botLidNumber && ids.includes(botLidNumber));
+  });
+  const isAdmin = me?.admin === 'admin' || me?.admin === 'superadmin';
+
+  if (!isAdmin) {
+    // Pedir admin en el grupo y dejar el trabajo pendiente.
+    const data = db();
+    if (!data.pendingStickerJobs || typeof data.pendingStickerJobs !== 'object') {
+      data.pendingStickerJobs = {};
+    }
+    data.pendingStickerJobs[groupJid] = { count, at: Date.now() };
+    save();
+    try {
+      const sent = await ctx.sock.sendMessage(groupJid, {
+        text: withWatermark(
+          `⚡ *ZENITSU BOT* ⚡\n\n` +
+            `👑 *Hazme admin* y te mando *${count} stickers* de verdad.\n\n` +
+            `_En cuanto me asciendan, aviso aquí y empiezo a mandarlos._`,
+        ),
+      });
+      trackSent(sent);
+    } catch {}
+    await ctx.reply(
+      withWatermark(
+        `👑 *PIDIENDO ADMIN EN ${groupName}*\n\n` +
+          `▸ Ya entré al grupo y pedí que me hagan admin\n` +
+          `▸ Cuando me asciendan, aviso en el grupo y mando los *${count} stickers* de verdad`,
+      ),
+    );
+    return;
+  }
+
+  // Ya soy admin: avisar en el grupo y mandar de verdad.
+  try {
+    const sent = await ctx.sock.sendMessage(groupJid, {
+      text: withWatermark(`⚡ *Ya soy admin.* Mandando los *${count} stickers* que prometí... 🌩️`),
+    });
+    trackSent(sent);
+  } catch {}
+  await ctx.reply(withWatermark(`⏳ Mandando *${count} stickers* a *${groupName}*...`));
+
+  const r = await sendStickerBatch(ctx.sock, groupJid, count, {
+    onProgress: async (sent, total) => {
+      if (sent % 10 === 0 && sent < total) {
+        try {
+          await ctx.reply(`📤 *${sent}/${total}* stickers enviados al grupo...`);
+        } catch {}
+      }
+    },
+  });
+
+  if (r.noImages) {
+    await ctx.reply(withWatermark('❌ No pude obtener imágenes para convertir en stickers.'));
+    return;
+  }
+
+  await ctx.reply(
+    withWatermark(
+      `✅ *STICKERS ENVIADOS A ${groupName}*\n\n` +
+        `📤 Enviados de verdad: *${r.sent}/${count}*\n` +
+        (r.skipped ? `🔁 Repetidos omitidos: *${r.skipped}*\n` : '') +
+        (r.failed ? `⚠️ Fallidos: *${r.failed}*\n` : ''),
+    ),
+  );
 }
+
 
 
 // ─── .canal: publica en el canal de WhatsApp del bot ──────────────────────
@@ -166,12 +290,23 @@ export default [
     name: 'canalsticker',
     aliases: ['stickercanal', 'canalstickers', 'subirstickers', 'stickersalcanal'],
     category: 'owner',
-    desc: 'Sube stickers aleatorios al canal (sin banner de reenvío).',
-    usage: 'canalsticker [cantidad]',
+    desc: 'Manda stickers aleatorios de verdad: al canal o a un grupo por su link (pidiendo admin primero).',
+    usage: 'canalsticker [cantidad] [link de grupo]',
     owner: true,
     async execute(ctx) {
-      const rawCount = Number.parseInt(ctx.args[0], 10);
+      const link =
+        (ctx.args || []).find((a) => /chat\.whatsapp\.com\//i.test(String(a))) || '';
+      const rawCount = Number.parseInt(
+        (ctx.args || []).find((a) => /^\d+$/.test(String(a))) || '',
+        10,
+      );
       const count = Math.min(50, Math.max(1, Number.isFinite(rawCount) ? rawCount : 50));
+
+      // ── Destino: link de grupo (pidiendo admin) o el canal del bot ──────
+      if (link) {
+        await sendStickersToLinkedGroup(ctx, link, count);
+        return;
+      }
 
       const jid = await getChannelJid(ctx.sock).catch(() => null);
       if (!jid) {
@@ -190,75 +325,27 @@ export default [
         ),
       );
 
-      const data = db();
-      if (!Array.isArray(data.canalStickerHistory)) data.canalStickerHistory = [];
-      const history = new Set(data.canalStickerHistory);
-      const usedNow = new Set();
-      const pack = data.stickerPack || 'ZENITSU BOT';
-      const author = data.stickerAuthor || 'Zenitsu';
+      const r = await sendStickerBatch(ctx.sock, jid, count, {
+        onProgress: async (sent, total) => {
+          if (sent % 10 === 0 && sent < total) {
+            await ctx.reply(`📤 *${sent}/${total}* stickers subidos al canal...`);
+          }
+        },
+      });
 
-      const candidates = await collectImageUrls(Math.min(240, count * 4));
-      if (!candidates.length) {
+      if (r.noImages) {
         await ctx.reply(
           withWatermark('❌ No pude obtener imágenes para convertir en stickers. Inténtalo de nuevo.'),
         );
         return;
       }
 
-      let sent = 0;
-      let failed = 0;
-      let skipped = 0;
-
-      for (const url of candidates) {
-        if (sent >= count) break;
-        try {
-          const image = await fetchBuffer(url, {}, 30000);
-          const imageHash = crypto.createHash('sha256').update(image).digest('hex');
-          if (usedNow.has(imageHash) || history.has(imageHash)) {
-            skipped++;
-            continue;
-          }
-
-          const webp = await mediaToSticker(image, { pack, author });
-          const webpHash = crypto.createHash('sha256').update(webp).digest('hex');
-          if (usedNow.has(webpHash) || history.has(webpHash)) {
-            skipped++;
-            continue;
-          }
-
-          // Se envía SOLO el sticker: el destino es @newsletter, así que el
-          // banner "⮩ Reenviado desde…" no se aplica.
-          await ctx.sock.sendMessage(jid, { sticker: webp });
-          usedNow.add(imageHash);
-          usedNow.add(webpHash);
-          data.canalStickerHistory.push(imageHash, webpHash);
-          sent++;
-          save();
-
-          if (sent % 10 === 0 && sent < count) {
-            try {
-              await ctx.reply(`📤 *${sent}/${count}* stickers subidos al canal...`);
-            } catch {}
-          }
-          // Pequeña pausa para no saturar el canal.
-          await sleep(350);
-        } catch {
-          failed++;
-        }
-      }
-
-      // El historial no crece sin límite: se guardan los últimos 800 hashes.
-      if (data.canalStickerHistory.length > 800) {
-        data.canalStickerHistory = data.canalStickerHistory.slice(-800);
-      }
-      save();
-
-      if (!sent) {
+      if (!r.sent) {
         await ctx.reply(
           withWatermark(
             `⚠️ No pude subir stickers nuevos.\n\n` +
-              (skipped ? `🔁 Repetidos omitidos: *${skipped}*\n` : '') +
-              (failed ? `❌ Fallidos: *${failed}*\n` : '') +
+              (r.skipped ? `🔁 Repetidos omitidos: *${r.skipped}*\n` : '') +
+              (r.failed ? `❌ Fallidos: *${r.failed}*\n` : '') +
               `\n💡 Vuelve a intentarlo en unos segundos.`,
           ),
         );
@@ -268,9 +355,9 @@ export default [
       await ctx.reply(
         withWatermark(
           `✅ *STICKERS SUBIDOS AL CANAL*\n\n` +
-            `📤 Enviados: *${sent}*\n` +
-            (skipped ? `🔁 Repetidos omitidos: *${skipped}*\n` : '') +
-            (failed ? `⚠️ Fallidos: *${failed}*\n` : '') +
+            `📤 Enviados de verdad: *${r.sent}*\n` +
+            (r.skipped ? `🔁 Repetidos omitidos: *${r.skipped}*\n` : '') +
+            (r.failed ? `⚠️ Fallidos: *${r.failed}*\n` : '') +
             `\n_Los stickers se enviaron solos, sin el banner «Reenviado desde…»._`,
         ),
       );
