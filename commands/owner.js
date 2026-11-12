@@ -114,6 +114,77 @@ function parseDays(args = []) {
   return 0;
 }
 
+// Número real (PN) de quien escribe. WhatsApp puede entregar un LID interno
+// (…@lid) en lugar del teléfono: un LID NUNCA sirve para pedir un código.
+async function resolveSenderPhone(ctx) {
+  const m = ctx.m || {};
+  const candidates = [m.senderAlt, m.sender, m.chatAlt, m.chat].filter(Boolean);
+  const phoneOf = (jid) => {
+    const s = String(jid || '');
+    if (!s.endsWith('@s.whatsapp.net')) return '';
+    const n = jidToNumber(s);
+    return n.length >= 7 && n.length <= 15 ? n : '';
+  };
+  // 1. JIDs que ya traen el teléfono real.
+  for (const jid of candidates) {
+    const n = phoneOf(jid);
+    if (n) return n;
+  }
+  // 2. LID → PN con el mapeo interno de Baileys (con tope de tiempo: si el
+  // servidor no responde, no se queda colgado).
+  for (const jid of candidates) {
+    if (!String(jid).endsWith('@lid')) continue;
+    try {
+      const pn = await Promise.race([
+        ctx.sock?.signalRepository?.lidMapping?.getPNForLID(String(jid)),
+        sleep(6000).then(() => null),
+      ]);
+      const n = phoneOf(pn || '');
+      if (n) return n;
+    } catch {}
+  }
+  // 3. Metadata del grupo (el participante trae phoneNumber y a veces lid).
+  if (m.isGroup && ctx.getGroupMeta) {
+    try {
+      const meta = await ctx.getGroupMeta();
+      const p =
+        findParticipant(meta, m.sender) ||
+        findParticipant(meta, m.senderAlt) ||
+        findParticipant(meta, m.chatAlt);
+      for (const jid of [p?.phoneNumber, p?.id, p?.lid]) {
+        const n = phoneOf(jid || '');
+        if (n) return n;
+      }
+      // Último recurso: resolver el LID del participante con Baileys.
+      const lid = [p?.lid, p?.id, m.sender].find((j) => String(j || '').endsWith('@lid'));
+      if (lid) {
+        const pn = await Promise.race([
+          ctx.sock?.signalRepository?.lidMapping?.getPNForLID(String(lid)),
+          sleep(6000).then(() => null),
+        ]);
+        const n = phoneOf(pn || '');
+        if (n) return n;
+      }
+    } catch {}
+  }
+  return '';
+}
+
+// Comprueba que el número exista en WhatsApp antes de generar el código.
+// Si la consulta falla, no bloquea (se deja intentar igual).
+async function numberOnWhatsApp(sock, number) {
+  try {
+    const res = await Promise.race([
+      sock.onWhatsApp(number),
+      sleep(8000).then(() => null),
+    ]);
+    if (!res) return true;
+    return Boolean(res[0]?.exists);
+  } catch {
+    return true;
+  }
+}
+
 
 function restartProcess() {
   saveNow();
@@ -729,34 +800,105 @@ export default [
     name: 'code',
     aliases: ['subbot', 'addsubbot', 'createsubbot'],
     category: 'subbots',
-    desc: 'Genera al instante el código de vinculación de un subbot. ¡Público!',
+    desc: 'Genera el código de vinculación de un subbot (tu número real o el que indiques).',
     usage: 'code [número] [nombre]',
     async execute(ctx) {
-      // Si no se pasa número, usa el número de quien escribe el comando.
-      const raw = String(ctx.args[0] || '').replace(/\D/g, '');
-      const number =
-        raw.length >= 7 ? raw : String(ctx.senderNumber || '').replace(/\D/g, '');
-      if (number.length < 7) {
+      const argNumber = String(ctx.args[0] || '').replace(/\D/g, '');
+      let number = argNumber.length >= 7 ? argNumber : '';
+      const customName = (number ? ctx.args.slice(1) : ctx.args).join(' ').trim();
+
+      // Sin número: se usa el teléfono REAL de quien escribe, nunca el LID.
+      if (!number) {
+        number = await resolveSenderPhone(ctx);
+        if (!number) {
+          await ctx.reply(
+            `❌ WhatsApp me entregó tu *LID* en vez de tu número real y no pude resolverlo.\n\n` +
+              `💡 Escribe tu número con código de país:\n*${ctx.prefix}code 503XXXXXXXX*`,
+          );
+          return;
+        }
+      }
+
+      if (!/^\d{7,15}$/.test(number)) {
         await ctx.reply(
-          `💡 No pude detectar tu número.\n\nUsa: *${ctx.prefix}code 503XXXXXXXX*`,
+          `❌ Número inválido: *${number}*\n\n` +
+            `💡 Usa el formato internacional sin «+»: *${ctx.prefix}code 503XXXXXXXX*`,
         );
         return;
       }
-      const customName =
-        raw.length >= 7 ? ctx.args.slice(1).join(' ').trim() : ctx.args.join(' ').trim();
-      // Nombre limpio por defecto: Zenitsu + últimos 2 dígitos (ej: Zenitsu62).
-      const autoName = `Zenitsu${number.slice(-2)}`;
-      const { addSubbot, startSubbot, isSubbotRunning } = await import('../lib/subbots.js');
 
-      if (isSubbotRunning(number)) {
-        await ctx.reply(`ℹ️ El subbot *+${number}* ya está activo.`);
+      const {
+        addSubbot,
+        startSubbot,
+        getSubbotEntry,
+        isSubbotConnected,
+        isSubbotRunning,
+      } = await import('../lib/subbots.js');
+
+      const pretty = (code) =>
+        String(code || '').length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : String(code || '');
+      const codeReply = (code) =>
+        `🔗 *VINCULA TU SUBBOT*\n\n📱 Número: *+${number}*\n🔢 Código: *${pretty(code)}*\n\n` +
+        `1. Abre WhatsApp en el *+${number}*.\n` +
+        `2. Dispositivos vinculados → Vincular dispositivo.\n` +
+        `3. Elige «Vincular con número de teléfono».\n` +
+        `4. Escribe el código: *${pretty(code)}*\n\n` +
+        `⚠️ Caduca en ~60 segundos. Si caduca, usa de nuevo *${ctx.prefix}code ${number}*.`;
+
+      // Ya conectado: no hay nada que hacer.
+      if (isSubbotConnected(number)) {
+        const rec = addSubbot(number, customName || `Zenitsu${number.slice(-2)}`);
+        await ctx.reply(`✅ El subbot *${rec.name}* (+${number}) ya está *conectado*.`);
         return;
       }
 
-      const record = addSubbot(number, customName || autoName);
+      // Vinculación en curso: se reutiliza y, si el código caducó, se pide
+      // uno nuevo (antes decía "ya está activo" y no mostraba ningún código).
+      if (isSubbotRunning(number)) {
+        const entry = getSubbotEntry(number);
+        if (entry?.registered) {
+          await ctx.reply(
+            `⏳ El subbot *+${number}* ya está vinculado y se está conectando.\n\n` +
+              `Prueba *${ctx.prefix}subbots* en unos segundos.`,
+          );
+          return;
+        }
+        const code = (await entry?.requestCode?.(true)) || entry?.pairingCode || '';
+        await ctx.reply(
+          code
+            ? codeReply(code)
+            : `⏳ La vinculación de *+${number}* está en curso.\n\n` +
+                `Espera unos segundos y vuelve a usar *${ctx.prefix}code ${number}*.`,
+        );
+        return;
+      }
+
+      // Evita códigos inútiles para números que no tienen WhatsApp.
+      const exists = await numberOnWhatsApp(ctx.sock, number);
+      if (!exists) {
+        await ctx.reply(
+          `❌ El número *+${number}* no tiene WhatsApp.\n\n` +
+            `💡 Revisa el código de país y vuelve a intentarlo.`,
+        );
+        return;
+      }
+
+      const autoName = `Zenitsu${number.slice(-2)}`;
+      let record;
+      try {
+        record = addSubbot(number, customName || autoName);
+      } catch (err) {
+        await ctx.reply(`❌ ${err.message}`);
+        return;
+      }
 
       try {
-        const result = await startSubbot(number);
+        // fresh: borra credenciales a medio vincular que rompen el código.
+        const result = await startSubbot(number, {
+          fresh: true,
+          notifyJid: ctx.chat,
+        });
+
         if (result.registered) {
           const ready = await Promise.race([
             result.readyPromise.then(() => true).catch(() => false),
@@ -776,17 +918,17 @@ export default [
         ]);
 
         if (outcome.code) {
-          // Texto plano, sin botones: el código es aleatorio y caduca en ~60s.
-          await ctx.reply(
-            `🔗 *VINCULA TU SUBBOT*\n\n📱 Número: *+${number}*\n🔢 Código: *${outcome.code}*\n\n1. Abre WhatsApp en el *+${number}*.\n2. Dispositivos vinculados → Vincular dispositivo.\n3. Elige «Vincular con número de teléfono».\n4. Escribe el código: *${outcome.code}*\n\n⚠️ Caduca en ~60 segundos.`,
-          );
+          await ctx.reply(codeReply(outcome.code));
         } else if (outcome.timeout) {
           await ctx.reply(
-            `⌛ El subbot *${record.name}* sigue esperando vinculación.\n\nCuando tengas el código, revisa la consola o vuelve a usar *${ctx.prefix}code ${number}*.`,
+            `⌛ No pude generar el código de *+${number}* a tiempo.\n\n` +
+              `💡 Vuelve a intentarlo con *${ctx.prefix}code ${number}*.`,
           );
         } else {
           await ctx.reply(
-            `❌ No se pudo generar el código del subbot.\n\n${outcome.error?.message || 'Error desconocido'}\n\n💡 Verifica que el número *+${number}* exista y tenga WhatsApp.`,
+            `❌ No se pudo generar el código del subbot *+${number}*.\n\n` +
+              `${outcome.error?.message || 'Error desconocido'}\n\n` +
+              `💡 Verifica que el número tenga WhatsApp y vuelve a intentarlo.`,
           );
         }
       } catch (err) {
@@ -798,45 +940,56 @@ export default [
     name: 'bots',
     aliases: ['subbots', 'listsubbots', 'subs', 'listbots', 'botsregistrados'],
     category: 'owner',
-    desc: 'Muestra cuántos bots hay registrados y su estado.',
+    desc: 'Muestra SOLO los subbots conectados y limpia los que nunca se vincularon.',
     usage: 'bots',
     owner: true,
     async execute(ctx) {
       const {
         listSubbots,
+        isSubbotConnected,
         isSubbotRunning,
-        isSubbotRegistered,
+        pruneUnlinkedSubbots,
       } = await import('../lib/subbots.js');
-      const list = listSubbots();
+
+      // Los que nunca se vincularon se eliminan: solo quedan bots reales.
+      const removed = await pruneUnlinkedSubbots();
+      const all = listSubbots();
+      // Solo se muestran los que tienen la conexión abierta.
+      const list = all.filter((s) => isSubbotConnected(s.number));
+      const pending = all.filter(
+        (s) => !isSubbotConnected(s.number) && isSubbotRunning(s.number),
+      ).length;
+      const removedNote = removed.length
+        ? `🧹 Eliminados: *${removed.length}* (nunca se vincularon)\n`
+        : '';
+      const pendingNote = pending ? `⏳ En vinculación: *${pending}*\n` : '';
+
       if (!list.length) {
         await ctx.reply(
-          `🤖 *BOTS REGISTRADOS*\n\n📊 Total: *0*\n\n💡 Crea uno con *${ctx.prefix}code 503XXXXXXXX*`,
+          `🤖 *SUBBOTS CONECTADOS*\n\n📊 Total: *0*\n${removedNote}${pendingNote}\n` +
+            `💡 Vincula uno con *${ctx.prefix}code* (tu número) o *${ctx.prefix}code 503XXXXXXXX*`,
         );
         return;
       }
-      const runningCount = list.filter((s) => isSubbotRunning(s.number)).length;
-      const registeredCount = list.filter((s) => isSubbotRegistered(s.number)).length;
+
       const premiumCount = list.filter(
         (s) => s.premium && (!s.premiumUntil || s.premiumUntil > Date.now()),
       ).length;
       const lines = list.map((s) => {
-        const running = isSubbotRunning(s.number);
-        const linked = isSubbotRegistered(s.number);
         const activo = s.premium && (!s.premiumUntil || s.premiumUntil > Date.now());
         const restante =
           activo && s.premiumUntil
             ? ` · ⏳ ${Math.max(1, Math.ceil((s.premiumUntil - Date.now()) / 86400000))}d`
             : '';
-        return `${s.primary ? '👑' : running ? (s.muted ? '🔇' : '🟢') : '⚪'} *${s.name}* · +${s.number}${s.primary ? ' (PRINCIPAL)' : ''}${activo ? ` 💎${restante}` : ''}${linked ? ' ✅' : ' ⏳'}${s.jid ? `\n   🆔 ${s.jid}` : ''}`;
+        return `${s.primary ? '👑' : s.muted ? '🔇' : '🟢'} *${s.name}* · +${s.number}${s.primary ? ' (PRINCIPAL)' : ''}${activo ? ` 💎${restante}` : ''}${s.jid ? `\n   🆔 ${s.jid}` : ''}`;
       });
       await ctx.reply(
-        `🤖 *BOTS REGISTRADOS*\n\n` +
+        `🤖 *SUBBOTS CONECTADOS*\n\n` +
+          `${removedNote}${pendingNote}` +
           `📊 Total: *${list.length}*\n` +
-          `🟢 Activos: *${runningCount}*\n` +
-          `✅ Vinculados: *${registeredCount}*\n` +
           `💎 Premium: *${premiumCount}*\n\n` +
           `${lines.join('\n\n')}\n\n` +
-          `👑 Principal · 🟢 Activo · 🔇 Silenciado · ⚪ Detenido · ✅ Vinculado · ⏳ Sin vincular · 💎 Premium\n\n` +
+          `👑 Principal · 🟢 Conectado · 🔇 Silenciado · 💎 Premium\n\n` +
           `💡 Da premium con *${ctx.prefix}prem <número> [días]* · Silencia a todos con *${ctx.prefix}silenciarsubbs* · Elige el bot principal con *${ctx.prefix}setprimary <número>*`,
       );
     },
