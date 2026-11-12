@@ -2,6 +2,7 @@ import { config } from '../config.js';
 import { db, getGroup, save } from '../lib/db.js';
 import { jidToNumber, numberToJid, toJid, withWatermark } from '../lib/utils.js';
 import { getGroupMetadata, invalidateGroupMeta, trackSent, wasSent } from '../lib/state.js';
+import { effectiveSettings, subbotForSock } from '../lib/settings.js';
 
 // ─── Bienvenida y despedida (edición Zenitsu) ────────────────────────────────
 // {user} llega ya resuelto: @número real (con ping) o el nombre del contacto.
@@ -205,8 +206,9 @@ async function notifyOwnerAdminRejected(sock, groupJid, groupName) {
   if (selfPromoteFailedGroups.has(groupJid)) return;
   selfPromoteFailedGroups.add(groupJid);
   const botNumber = jidToNumber(sock?.user?.id);
-  const botName = db().botName || config.botName;
-  const prefix = db().prefix || config.prefix;
+  const eff = effectiveSettings(subbotForSock(sock));
+  const botName = eff.botName;
+  const prefix = eff.prefix;
   const text =
     `👑 *AUTOADMIN*\n\nMe invitaron a *${groupName || 'un grupo'}* pero no pude hacerme admin solo: ` +
     `en WhatsApp solo los administradores pueden ascender.\n\n` +
@@ -301,7 +303,8 @@ export async function handleGroupParticipants(sock, update) {
 
     if (action === 'add') {
       if (isBot) {
-        const text = `⚡ *¡GRACIAS POR INVITARME!*\n\nSoy *${db().botName || config.botName}*, tu bot de confianza.\n\n📜 Escribe *${db().prefix || config.prefix}menu* para ver todos mis comandos.\n\n🌩️ _Respiración del Trueno, activada._`;
+        const eff = effectiveSettings(subbotForSock(sock));
+        const text = `⚡ *¡GRACIAS POR INVITARME!*\n\nSoy *${eff.botName}*, tu bot de confianza.\n\n📜 Escribe *${eff.prefix}menu* para ver todos mis comandos.\n\n🌩️ _Respiración del Trueno, activada._`;
         try {
           const sent = await sock.sendMessage(id, { text: withWatermark(text) });
           trackSent(sent);
@@ -340,7 +343,7 @@ export async function handleGroupParticipants(sock, update) {
         authorJid = (await pnOf(sock, toJid(update.author), lidMap)) || '';
       }
       const authorNum = jidToNumber(authorJid);
-      const botName = db().botName || config.botName;
+      const botName = effectiveSettings(subbotForSock(sock)).botName;
       const repo = 'https://github.com/jhondzn03-bit';
       // Quién lo hizo: si fue el bot (.promote/.demote) se acredita al bot.
       const byHuman = authorJid && authorNum !== botNumber && authorNum !== num;

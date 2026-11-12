@@ -34,6 +34,14 @@ import {
 } from '../lib/utils.js';
 import { getGroupMetadata, trackSent } from '../lib/state.js';
 import { getTargetJid, findParticipant } from '../lib/targets.js';
+import {
+  clearSubbotBanner,
+  effectiveSettings,
+  getBotSetting,
+  setBotSetting,
+  setBotSettings,
+  subbotBannerPath,
+} from '../lib/settings.js';
 import { gifToMp4 } from '../lib/sticker.js';
 import { DEFAULT_MENU_STYLE, MENU_STYLES } from '../lib/menu.js';
 import { DEFAULT_THEME, THEMES, themeList } from '../lib/theme.js';
@@ -432,21 +440,84 @@ async function kickEveryone(ctx) {
 
 export default [
   {
+    name: 'bot',
+    aliases: ['botestado', 'estadobot', 'subbotestado'],
+    category: 'owner',
+    desc: 'Apaga o enciende ESTE subbot. Apagado no responde, no reacciona y no lee nada.',
+    usage: 'bot on|off|estado',
+    owner: true,
+    subOwner: true,
+    async execute(ctx) {
+      if (!ctx.isSubbot) {
+        await ctx.reply(
+          `ℹ️ Este comando controla a un *subbot*.\n\n` +
+            `En grupos usa *${ctx.prefix}botoff* / *${ctx.prefix}boton* para silenciar el bot solo en ese grupo.`,
+        );
+        return;
+      }
+
+      const { setSubbotPaused } = await import('../lib/subbots.js');
+      const action = String(ctx.args[0] || '').toLowerCase();
+      const record = ctx.subbot;
+
+      if (!action || ['estado', 'status', 'info'].includes(action)) {
+        await ctx.reply(
+          `⚡ *ESTADO DE ESTE SUBBOT*\n\n` +
+            `🤖 ${record.name} · +${record.number}\n` +
+            `▸ Estado: ${record.paused ? '🔴 *APAGADO*' : '🟢 *ENCENDIDO*'}\n` +
+            `▸ Owner: ${record.owner ? `+${record.owner}` : 'sin configurar'}\n\n` +
+            `💡 ${ctx.prefix}bot off — no responde nada\n` +
+            `💡 ${ctx.prefix}bot on — vuelve a responder`,
+        );
+        return;
+      }
+
+      if (['off', 'apagar', 'apagado', 'detener', 'stop', '0'].includes(action)) {
+        setSubbotPaused(record.number, true);
+        await ctx.reply(
+          `🔴 *SUBBOT APAGADO*\n\n` +
+            `🤖 ${record.name} · +${record.number}\n\n` +
+            `Desde ahora *no lee, no reacciona y no responde nada* (ni comandos, ni IA, ni bienvenidas). ` +
+            `Sigue conectado en segundo plano para que puedas encenderlo.\n\n` +
+            `💡 Para encenderlo: *${ctx.prefix}bot on*`,
+        );
+        return;
+      }
+
+      if (['on', 'encender', 'prender', 'activar', 'start', '1'].includes(action)) {
+        setSubbotPaused(record.number, false);
+        await ctx.reply(
+          `🟢 *SUBBOT ENCENDIDO*\n\n` +
+            `🤖 ${record.name} · +${record.number}\n\n` +
+            `Ya vuelve a responder comandos, IA y mensajes del grupo.\n\n` +
+            `💡 Para apagarlo: *${ctx.prefix}bot off*`,
+        );
+        return;
+      }
+
+      await ctx.reply(
+        `💡 Uso: *${ctx.prefix}bot on* · *${ctx.prefix}bot off* · *${ctx.prefix}bot estado*`,
+      );
+    },
+  },
+  {
     name: 'setname',
     aliases: ['setbotname', 'nombrebot'],
     category: 'owner',
-    desc: 'Cambia el nombre interno del bot.',
+    desc: 'Cambia el nombre interno del bot (o de este subbot).',
     usage: 'setname <nombre>',
     owner: true,
+    subOwner: true,
     async execute(ctx) {
       const name = ctx.text.trim();
       if (name.length < 2 || name.length > 40) {
         await ctx.reply(`💡 Uso: *${ctx.prefix}setname* <nombre> (2 a 40 caracteres)`);
         return;
       }
-      db().botName = name;
-      save();
-      await ctx.reply(`✅ Nombre del bot actualizado a:\n\n⚡ *${name}*`);
+      setBotSetting(ctx.subbot, 'botName', name);
+      await ctx.reply(
+        `✅ Nombre ${ctx.isSubbot ? 'de este subbot' : 'del bot'} actualizado a:\n\n⚡ *${name}*`,
+      );
     },
   },
   {
@@ -456,13 +527,23 @@ export default [
     desc: 'Cambia la imagen, GIF o video (máx. 15s) del menú.',
     usage: 'setbanner <url | responde a imagen/gif/video | reset>',
     owner: true,
+    subOwner: true,
     async execute(ctx) {
       const arg = String(ctx.args[0] || '').toLowerCase();
       if (arg === 'reset' || arg === 'delete' || arg === 'borrar') {
-        db().banner = null;
-        db().bannerType = 'image';
-        save();
-        await ctx.reply('🗑️ Banner eliminado. El menú se enviará como texto.');
+        if (ctx.isSubbot) {
+          clearSubbotBanner(ctx.subbot.number);
+          setBotSettings(ctx.subbot, { banner: undefined, bannerType: undefined });
+        } else {
+          db().banner = null;
+          db().bannerType = 'image';
+          save();
+        }
+        await ctx.reply(
+          ctx.isSubbot
+            ? '🗑️ Banner propio eliminado. Este subbot usará el banner del bot principal.'
+            : '🗑️ Banner eliminado. El menú se enviará como texto.',
+        );
         return;
       }
 
@@ -502,16 +583,26 @@ export default [
       }
 
       const isVideo = kind === 'video';
-      const target = path.join(config.assetsDir, isVideo ? 'banner.mp4' : 'banner.jpg');
+      // El banner de un subbot se guarda con su número para no pisar el del
+      // bot principal (assets/banner.jpg | banner.mp4).
+      const target = ctx.isSubbot
+        ? subbotBannerPath(ctx.subbot.number, isVideo)
+        : path.join(config.assetsDir, isVideo ? 'banner.mp4' : 'banner.jpg');
+      if (ctx.isSubbot) {
+        const other = subbotBannerPath(ctx.subbot.number, !isVideo);
+        try { fs.rmSync(other, { force: true }); } catch {}
+      }
       fs.mkdirSync(config.assetsDir, { recursive: true });
       fs.writeFileSync(target, buffer);
-      db().banner = target;
-      db().bannerType = isVideo ? 'video' : 'image';
-      save();
+      setBotSettings(ctx.subbot, {
+        banner: target,
+        bannerType: isVideo ? 'video' : 'image',
+      });
 
+      const botName = effectiveSettings(ctx.subbot).botName;
       const caption = isVideo
-        ? `✅ *Banner actualizado*\n\n🎬 Video/GIF${seconds ? ` de *${seconds.toFixed(1)}s*` : ''}\nAsí se verá el menú de ZENITSU BOT.`
-        : '✅ *Banner actualizado*\n\n🖼️ Imagen del menú de ZENITSU BOT.';
+        ? `✅ *Banner actualizado*\n\n🎬 Video/GIF${seconds ? ` de *${seconds.toFixed(1)}s*` : ''}\nAsí se verá el menú de ${botName}.`
+        : `✅ *Banner actualizado*\n\n🖼️ Imagen del menú de ${botName}.`;
       if (isVideo) {
         await ctx.send({ video: buffer, gifPlayback: true, caption });
       } else {
@@ -526,11 +617,11 @@ export default [
     desc: 'Cambia el enlace que aparece en el menú.',
     usage: 'setlink <url | reset>',
     owner: true,
+    subOwner: true,
     async execute(ctx) {
       const value = ctx.text.trim();
       if (!value || ['reset', 'borrar', 'delete'].includes(value.toLowerCase())) {
-        db().menuLink = '';
-        save();
+        setBotSetting(ctx.subbot, 'menuLink', '');
         await ctx.reply('🗑️ Enlace del menú eliminado.');
         return;
       }
@@ -538,8 +629,7 @@ export default [
         await ctx.reply(`💡 Uso: *${ctx.prefix}setlink* https://github.com/jhondzn03-bit/ZENITSU-BOT`);
         return;
       }
-      db().menuLink = value;
-      save();
+      setBotSetting(ctx.subbot, 'menuLink', value);
       await ctx.reply(`✅ Enlace del menú actualizado:\n\n🔗 ${value}`);
     },
   },
@@ -550,10 +640,11 @@ export default [
     desc: 'Cambia el tema global: menú + estilo de todas las respuestas.',
     usage: 'settheme <estilo|off|lista>',
     owner: true,
+    subOwner: true,
     async execute(ctx) {
       const style = String(ctx.args[0] || '').toLowerCase();
-      const currentTheme = db().theme || DEFAULT_THEME;
-      const currentMenu = db().menuStyle || DEFAULT_MENU_STYLE;
+      const currentTheme = getBotSetting(ctx.subbot, 'theme') || DEFAULT_THEME;
+      const currentMenu = getBotSetting(ctx.subbot, 'menuStyle') || DEFAULT_MENU_STYLE;
       const list = themeList(currentTheme === 'off' ? '' : currentTheme);
 
       if (!style || ['lista', 'list', 'ayuda', 'help'].includes(style)) {
@@ -569,8 +660,7 @@ export default [
       }
 
       if (['off', 'ninguno', 'none', 'apagado'].includes(style)) {
-        db().theme = 'off';
-        save();
+        setBotSetting(ctx.subbot, 'theme', 'off');
         await ctx.reply('✅ Marcos de las respuestas *apagados*. El menú conserva su estilo.');
         return;
       }
@@ -582,10 +672,9 @@ export default [
         return;
       }
 
-      // Un solo comando cambia TODO: menú + respuestas.
-      db().theme = style;
-      db().menuStyle = style;
-      save();
+      // Un solo comando cambia TODO: menú + respuestas (solo en este subbot
+      // si lo ejecuta su owner).
+      setBotSettings(ctx.subbot, { theme: style, menuStyle: style });
       const meta = THEMES[style];
       // Este mismo mensaje ya sale con el tema nuevo: es la vista previa.
       await ctx.reply(
@@ -604,9 +693,10 @@ export default [
     desc: 'Cambia el estilo visual del menú.',
     usage: 'setmenu <estilo>',
     owner: true,
+    subOwner: true,
     async execute(ctx) {
       const style = String(ctx.args[0] || '').toLowerCase();
-      const current = db().menuStyle || DEFAULT_MENU_STYLE;
+      const current = getBotSetting(ctx.subbot, 'menuStyle') || DEFAULT_MENU_STYLE;
       const list = Object.entries(MENU_STYLES)
         .map(([key, meta]) => `${key === current ? '✅' : '▸'} ${meta.emoji} *${key}* — ${meta.desc}`)
         .join('\n');
@@ -619,8 +709,7 @@ export default [
       }
 
       if (style === 'reset' || style === 'default') {
-        db().menuStyle = DEFAULT_MENU_STYLE;
-        save();
+        setBotSetting(ctx.subbot, 'menuStyle', DEFAULT_MENU_STYLE);
         await ctx.reply(`✅ Estilo del menú restablecido a *${DEFAULT_MENU_STYLE}*.`);
         return;
       }
@@ -632,8 +721,7 @@ export default [
         return;
       }
 
-      db().menuStyle = style;
-      save();
+      setBotSetting(ctx.subbot, 'menuStyle', style);
       const meta = MENU_STYLES[style];
       await ctx.reply(
         `✅ Estilo del menú cambiado a ${meta.emoji} *${meta.label}*.\n\nEscribe *${ctx.prefix}menu* para verlo.`,
@@ -647,14 +735,14 @@ export default [
     desc: 'Cambia el prefijo de los comandos.',
     usage: 'setprefix <prefijo>',
     owner: true,
+    subOwner: true,
     async execute(ctx) {
       const p = String(ctx.args[0] || '').trim();
       if (!p || p.length > 3 || /\s/.test(p)) {
         await ctx.reply(`💡 Uso: *${ctx.prefix}setprefix* <prefijo> (ej: . ! # /)`);
         return;
       }
-      db().prefix = p;
-      save();
+      setBotSetting(ctx.subbot, 'prefix', p);
       await ctx.reply(`✅ Prefijo cambiado a: *${p}*\n\nEjemplo: *${p}menu*`);
     },
   },
@@ -693,17 +781,46 @@ export default [
   },
   {
     name: 'setowner',
-    aliases: ['ownerprincipal'],
+    aliases: ['ownerprincipal', 'dueño'],
     category: 'owner',
-    desc: 'Cambia el owner principal del bot.',
-    usage: 'setowner <número>',
+    desc: 'Cambia el owner: el global del bot o el propio de este subbot.',
+    usage: 'setowner [número|@mención]',
     owner: true,
+    subOwner: true,
     async execute(ctx) {
-      const num = String(ctx.args[0] || '').replace(/\D/g, '');
+      let num = '';
+      if (ctx.mentioned?.length) {
+        num = await resolvePhoneFromJid(ctx, ctx.mentioned[0]);
+      }
+      if (!num && ctx.quotedSender) {
+        num = await resolvePhoneFromJid(ctx, ctx.quotedSender);
+      }
+      if (!num) num = String(ctx.args[0] || '').replace(/\D/g, '');
+      // En un subbot, sin argumentos se usa el número real de quien escribe.
+      if (!num && ctx.isSubbot) num = await resolveSenderPhone(ctx);
+
       if (num.length < 7) {
-        await ctx.reply(`💡 Uso: *${ctx.prefix}setowner* 503XXXXXXXX`);
+        await ctx.reply(
+          ctx.isSubbot
+            ? `💡 Uso: *${ctx.prefix}setowner* 503XXXXXXXX\nTambién: *${ctx.prefix}setowner* (tú mismo) o mencionando a alguien.`
+            : `💡 Uso: *${ctx.prefix}setowner* 503XXXXXXXX`,
+        );
         return;
       }
+
+      if (ctx.isSubbot) {
+        const { setSubbotOwner } = await import('../lib/subbots.js');
+        const record = setSubbotOwner(ctx.subbot.number, num);
+        await ctx.reply(
+          `👑 *OWNER DE ESTE SUBBOT ACTUALIZADO*\n\n` +
+            `🤖 Subbot: *${record.name}*\n📱 +${record.number}\n` +
+            `👤 Nuevo owner: *+${num}*\n\n` +
+            `Ese owner ya puede usar *${ctx.prefix}bot on/off*, *${ctx.prefix}setname*, ` +
+            `*${ctx.prefix}setbanner*, *${ctx.prefix}settheme* y los demás ajustes de este subbot.`,
+        );
+        return;
+      }
+
       setPrimaryOwner(num);
       await ctx.reply(`✅ Owner principal actualizado a: *+${num}*`);
     },
@@ -765,6 +882,7 @@ export default [
     desc: 'Cambia la foto de perfil del bot.',
     usage: 'setpp (responde a una imagen o pasa URL)',
     owner: true,
+    subOwner: true,
     async execute(ctx) {
       const buffer = await getImageBuffer(ctx);
       if (!buffer) {
@@ -782,23 +900,23 @@ export default [
     desc: 'Cambia el nombre y autor de los stickers.',
     usage: 'setsticker pack <nombre> | author <autor>',
     owner: true,
+    subOwner: true,
     async execute(ctx) {
       const sub = String(ctx.args[0] || '').toLowerCase();
       const value = ctx.args.slice(1).join(' ').trim();
       if (sub === 'pack' && value) {
-        db().stickerPack = value;
-        save();
+        setBotSetting(ctx.subbot, 'stickerPack', value);
         await ctx.reply(`✅ Pack de stickers: *${value}*`);
         return;
       }
       if ((sub === 'author' || sub === 'autor') && value) {
-        db().stickerAuthor = value;
-        save();
+        setBotSetting(ctx.subbot, 'stickerAuthor', value);
         await ctx.reply(`✅ Autor de stickers: *${value}*`);
         return;
       }
+      const current = effectiveSettings(ctx.subbot);
       await ctx.reply(
-        `🎨 *Configuración de stickers*\n\n▸ Pack: *${db().stickerPack}*\n▸ Autor: *${db().stickerAuthor}*\n\n💡 ${ctx.prefix}setsticker pack Mi Pack\n💡 ${ctx.prefix}setsticker author Mi Nombre`,
+        `🎨 *Configuración de stickers*\n\n▸ Pack: *${current.stickerPack}*\n▸ Autor: *${current.stickerAuthor}*\n\n💡 ${ctx.prefix}setsticker pack Mi Pack\n💡 ${ctx.prefix}setsticker author Mi Nombre`,
       );
     },
   },
@@ -870,9 +988,12 @@ export default [
       let number = argNumber.length >= 7 ? argNumber : '';
       const customName = (number ? ctx.args.slice(1) : ctx.args).join(' ').trim();
 
+      // Teléfono REAL de quien crea el subbot: será su owner por defecto.
+      const creatorNumber = await resolveSenderPhone(ctx);
+
       // Sin número: se usa el teléfono REAL de quien escribe, nunca el LID.
       if (!number) {
-        number = await resolveSenderPhone(ctx);
+        number = creatorNumber;
         if (!number) {
           await ctx.reply(
             `❌ WhatsApp me entregó tu *LID* en vez de tu número real y no pude resolverlo.\n\n` +
@@ -898,6 +1019,16 @@ export default [
         isSubbotRunning,
       } = await import('../lib/subbots.js');
 
+      // El creador queda como owner del subbot si aún no tiene uno. Así el
+      // subbot puede personalizarse y apagarse/encenderse por su dueño.
+      const claimOwner = (record) => {
+        if (record && !record.owner && creatorNumber) {
+          record.owner = creatorNumber;
+          save();
+        }
+        return record;
+      };
+
       const pretty = (code) =>
         String(code || '').length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : String(code || '');
       const codeReply = (code) =>
@@ -916,7 +1047,7 @@ export default [
 
       // Ya conectado: no hay nada que hacer.
       if (isSubbotConnected(number)) {
-        const rec = addSubbot(number, customName || `Zenitsu${number.slice(-2)}`);
+        const rec = claimOwner(addSubbot(number, customName || `Zenitsu${number.slice(-2)}`));
         const prem = rec.premium && (!rec.premiumUntil || rec.premiumUntil > Date.now());
         await ctx.reply(
           `✅ El subbot *${rec.name}* (+${number}) ya está *conectado*${prem ? ' · 💎 *PREMIUM*' : ''}.`,
@@ -927,6 +1058,7 @@ export default [
       // Vinculación en curso: se reutiliza y, si el código caducó, se pide
       // uno nuevo (antes decía "ya está activo" y no mostraba ningún código).
       if (isSubbotRunning(number)) {
+        claimOwner(addSubbot(number));
         const entry = getSubbotEntry(number);
         if (entry?.registered) {
           await ctx.reply(
@@ -960,7 +1092,7 @@ export default [
       const autoName = `Zenitsu${number.slice(-2)}`;
       let record;
       try {
-        record = addSubbot(number, customName || autoName);
+        record = claimOwner(addSubbot(number, customName || autoName));
       } catch (err) {
         await ctx.reply(`❌ ${err.message}`);
         return;
@@ -1049,6 +1181,7 @@ export default [
       const premiumCount = list.filter(
         (s) => s.premium && (!s.premiumUntil || s.premiumUntil > Date.now()),
       ).length;
+      const pausedCount = list.filter((s) => s.paused).length;
       const lines = list.map((s) => {
         const activo = s.premium && (!s.premiumUntil || s.premiumUntil > Date.now());
         const restante =
@@ -1056,17 +1189,19 @@ export default [
             ? ` · ⏳ ${Math.max(1, Math.ceil((s.premiumUntil - Date.now()) / 86400000))} día(s)`
             : '';
         const premiumTag = activo ? `\n   💎 *PREMIUM*${s.premiumUntil ? restante : ' · ♾️ permanente'}` : '';
-        const icon = s.primary ? '👑' : s.muted ? '🔇' : '🟢';
-        return `${icon} *${s.name}* · +${s.number}${s.primary ? ' (PRINCIPAL)' : ''}${premiumTag}${s.jid ? `\n   🆔 ${s.jid}` : ''}`;
+        const pausedTag = s.paused ? '\n   🔴 *APAGADO* · no responde (usa .bot on)' : '';
+        const icon = s.paused ? '🔴' : s.primary ? '👑' : s.muted ? '🔇' : '🟢';
+        return `${icon} *${s.name}* · +${s.number}${s.primary ? ' (PRINCIPAL)' : ''}${premiumTag}${pausedTag}${s.jid ? `\n   🆔 ${s.jid}` : ''}`;
       });
       await ctx.reply(
         `🤖 *SUBBOTS CONECTADOS*\n\n` +
           `${removedNote}${pendingNote}` +
           `📊 Total: *${list.length}*\n` +
-          `💎 Premium: *${premiumCount}*\n\n` +
-          `${lines.join('\n\n')}\n\n` +
-          `👑 Principal · 🟢 Conectado · 🔇 Silenciado · 💎 Premium\n\n` +
-          `💡 Da premium con *${ctx.prefix}prem <número> [días]* · Quítalo con *${ctx.prefix}unprem <número>* · Silencia a todos con *${ctx.prefix}silenciarsubbs* · Elige el bot principal con *${ctx.prefix}setprimary <número>*`,
+          `💎 Premium: *${premiumCount}*\n` +
+          (pausedCount ? `🔴 Apagados: *${pausedCount}*\n` : '') +
+          `\n${lines.join('\n\n')}\n\n` +
+          `👑 Principal · 🟢 Conectado · 🔇 Silenciado · 🔴 Apagado · 💎 Premium\n\n` +
+          `💡 Da premium con *${ctx.prefix}prem <número> [días]* · Quítalo con *${ctx.prefix}unprem <número>* · Silencia a todos con *${ctx.prefix}silenciarsubbs* · Elige el bot principal con *${ctx.prefix}setprimary <número>* · Cada subbot se apaga con *${ctx.prefix}bot off*`,
       );
     },
   },

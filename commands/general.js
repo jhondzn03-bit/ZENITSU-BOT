@@ -15,6 +15,7 @@ import {
 import { buildMenu, buildCommandHelp, DEFAULT_MENU_STYLE } from '../lib/menu.js';
 import { listCustom } from '../lib/customcmd.js';
 import { participantJid } from '../lib/targets.js';
+import { effectiveSettings } from '../lib/settings.js';
 
 const ZENITSU_QUOTES = [
   '⚡ "El trueno solo asusta a quienes no confían en su corazón." — Zenitsu Agatsuma',
@@ -33,7 +34,11 @@ function uptimeText() {
 
 async function sendMenu(ctx) {
   const store = db();
-  const isOwner = isOwnerNumber(ctx.senderNumber);
+  const settings = effectiveSettings(ctx.subbot);
+  const isOwner = Boolean(ctx.isOwner ?? isOwnerNumber(ctx.senderNumber));
+  // El owner de un subbot ve SOLO los comandos de personalización (subOwner);
+  // el owner global ve todos los comandos de owner.
+  const canSeeOwnerCommand = (c) => isOwner || (ctx.isSubOwner && c.subOwner);
   // En subbots normales se ocultan los comandos premium (descargas e IA).
   // El owner, los subbots premium y el bot principal ven el menú completo.
   const hidePremium = ctx.isSubbot && !ctx.isSubbotPremium && !ctx.isSubbotPrimary;
@@ -44,7 +49,7 @@ async function sendMenu(ctx) {
       !c.hidden &&
       // Los comandos +18 fueron retirados: ni en el menú ni contados.
       c.category !== 'nsfw' &&
-      (c.category !== 'owner' || isOwner) &&
+      (c.category !== 'owner' || canSeeOwnerCommand(c)) &&
       (!hidePremium || !isPremiumCmd(c)),
   );
   // En un grupo, el menú también muestra los comandos de VENTAS propios
@@ -61,7 +66,7 @@ async function sendMenu(ctx) {
       }
     } catch {}
   }
-  const botName = store.botName || config.botName;
+  const botName = settings.botName || config.botName;
   // Datos reales del bot para el menú Luna Edition.
   const sys = osInfo();
   // En Termux osInfo() devuelve "android arm64": se reconoce por prefijo
@@ -73,15 +78,15 @@ async function sendMenu(ctx) {
   // El menú NO muestra el enlace del repositorio.
   const text = buildMenu({
     commands: available,
-    prefix: store.prefix || config.prefix,
+    prefix: settings.prefix || config.prefix,
     botName,
     pushName: ctx.pushName,
     isOwner,
     mode: store.mode || 'public',
     uptime: getUptime(),
     totalCommands: available.length,
-    menuLink: store.menuLink || '',
-    style: store.menuStyle || DEFAULT_MENU_STYLE,
+    menuLink: settings.menuLink || '',
+    style: settings.menuStyle || DEFAULT_MENU_STYLE,
     version: config.version,
     ownerName: config.ownerName,
     platform,
@@ -104,12 +109,13 @@ async function sendMenu(ctx) {
   }
 
   // La imagen/video del banner y el menú van SIEMPRE en el mismo mensaje.
-  const banner = store.banner;
+  // Cada subbot usa su propio banner si lo configuró; si no, el global.
+  const banner = settings.banner;
   if (banner && fs.existsSync(banner)) {
     try {
       const buffer = fs.readFileSync(banner);
       const isVideo =
-        store.bannerType === 'video' || /\.(mp4|webm)$/i.test(String(banner));
+        settings.bannerType === 'video' || /\.(mp4|webm)$/i.test(String(banner));
       if (isVideo) {
         await ctx.send({ video: buffer, gifPlayback: true, caption: text + footerNote, mentions });
       } else {
@@ -223,7 +229,7 @@ export default [
   },
   {
     name: 'info',
-    aliases: ['bot', 'infobot'],
+    aliases: ['infobot', 'botinfo'],
     category: 'general',
     desc: 'Muestra información general del bot.',
     usage: 'info',

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import {
   channelAutoUpdates,
   getChannelInfo,
@@ -6,7 +7,50 @@ import {
   setChannel,
   setChannelAutoUpdates,
 } from '../lib/channel.js';
-import { withWatermark } from '../lib/utils.js';
+import { db, save } from '../lib/db.js';
+import { fetchBuffer, fetchJson, sleep, withWatermark } from '../lib/utils.js';
+import { mediaToSticker } from '../lib/sticker.js';
+
+// ─── Stickers aleatorios para el canal ────────────────────────────────────
+// Se usan imágenes SFW de nekos.best y se convierten a WebP. El historial de
+// hashes evita repetir stickers entre ejecuciones.
+
+const STICKER_CATEGORIES = ['waifu', 'neko', 'kitsune', 'husbando'];
+
+function shuffle(list) {
+  const copy = [...list];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+async function collectImageUrls(limit) {
+  const urls = [];
+  const seen = new Set();
+  for (let round = 0; round < 8 && urls.length < limit; round++) {
+    for (const category of shuffle(STICKER_CATEGORIES)) {
+      if (urls.length >= limit) break;
+      try {
+        const data = await fetchJson(
+          `https://nekos.best/api/v2/${category}?amount=20`,
+          {},
+          20000,
+        );
+        for (const item of data?.results || []) {
+          const url = item?.url;
+          if (!url || seen.has(url)) continue;
+          seen.add(url);
+          urls.push(url);
+          if (urls.length >= limit) break;
+        }
+      } catch {}
+    }
+  }
+  return urls;
+}
+
 
 // ─── .canal: publica en el canal de WhatsApp del bot ──────────────────────
 // El owner configura su canal UNA vez con .canal set <enlace> y el bot
@@ -115,6 +159,120 @@ export default [
         ok
           ? withWatermark(`📢 *Publicado en el canal.* ✅`)
           : withWatermark(`❌ No pude publicar (¿el canal está configurado?). Usa *${ctx.prefix}canal set <enlace>*`),
+      );
+    },
+  },
+  {
+    name: 'canalsticker',
+    aliases: ['stickercanal', 'canalstickers', 'subirstickers', 'stickersalcanal'],
+    category: 'owner',
+    desc: 'Sube stickers aleatorios al canal (sin banner de reenvío).',
+    usage: 'canalsticker [cantidad]',
+    owner: true,
+    async execute(ctx) {
+      const rawCount = Number.parseInt(ctx.args[0], 10);
+      const count = Math.min(30, Math.max(1, Number.isFinite(rawCount) ? rawCount : 30));
+
+      const jid = await getChannelJid(ctx.sock).catch(() => null);
+      if (!jid) {
+        await ctx.reply(
+          withWatermark(
+            `⚠️ No hay canal configurado.\n\n💡 Configúralo con *${ctx.prefix}canal set <enlace>*`,
+          ),
+        );
+        return;
+      }
+
+      await ctx.reply(
+        withWatermark(
+          `⏳ *PREPARANDO ${count} STICKERS...*\n\n` +
+            `Buscando imágenes aleatorias y convirtiéndolas. Puede tardar un poco.`,
+        ),
+      );
+
+      const data = db();
+      if (!Array.isArray(data.canalStickerHistory)) data.canalStickerHistory = [];
+      const history = new Set(data.canalStickerHistory);
+      const usedNow = new Set();
+      const pack = data.stickerPack || 'ZENITSU BOT';
+      const author = data.stickerAuthor || 'Zenitsu';
+
+      const candidates = await collectImageUrls(Math.min(120, count * 4));
+      if (!candidates.length) {
+        await ctx.reply(
+          withWatermark('❌ No pude obtener imágenes para convertir en stickers. Inténtalo de nuevo.'),
+        );
+        return;
+      }
+
+      let sent = 0;
+      let failed = 0;
+      let skipped = 0;
+
+      for (const url of candidates) {
+        if (sent >= count) break;
+        try {
+          const image = await fetchBuffer(url, {}, 30000);
+          const imageHash = crypto.createHash('sha256').update(image).digest('hex');
+          if (usedNow.has(imageHash) || history.has(imageHash)) {
+            skipped++;
+            continue;
+          }
+
+          const webp = await mediaToSticker(image, { pack, author });
+          const webpHash = crypto.createHash('sha256').update(webp).digest('hex');
+          if (usedNow.has(webpHash) || history.has(webpHash)) {
+            skipped++;
+            continue;
+          }
+
+          // Se envía SOLO el sticker: el destino es @newsletter, así que el
+          // banner "⮩ Reenviado desde…" no se aplica.
+          await ctx.sock.sendMessage(jid, { sticker: webp });
+          usedNow.add(imageHash);
+          usedNow.add(webpHash);
+          data.canalStickerHistory.push(imageHash, webpHash);
+          sent++;
+          save();
+
+          if (sent % 10 === 0 && sent < count) {
+            try {
+              await ctx.reply(`📤 *${sent}/${count}* stickers subidos al canal...`);
+            } catch {}
+          }
+          // Pequeña pausa para no saturar el canal.
+          await sleep(350);
+        } catch {
+          failed++;
+        }
+      }
+
+      // El historial no crece sin límite: se guardan los últimos 800 hashes.
+      if (data.canalStickerHistory.length > 800) {
+        data.canalStickerHistory = data.canalStickerHistory.slice(-800);
+      }
+      save();
+
+      if (!sent) {
+        await ctx.reply(
+          withWatermark(
+            `⚠️ No pude subir stickers nuevos.\n\n` +
+              (skipped ? `🔁 Repetidos omitidos: *${skipped}*\n` : '') +
+              (failed ? `❌ Fallidos: *${failed}*\n` : '') +
+              `\n💡 Vuelve a intentarlo en unos segundos.`,
+          ),
+        );
+        return;
+      }
+
+      await ctx.reply(
+        withWatermark(
+          `✅ *STICKERS SUBIDOS AL CANAL*\n\n` +
+            `📤 Enviados: *${sent}*\n` +
+            (skipped ? `🔁 Repetidos omitidos: *${skipped}*\n` : '') +
+            (failed ? `⚠️ Fallidos: *${failed}*\n` : '') +
+            `\n_Los stickers se enviaron solos, sin el banner «Reenviado desde…»._`,
+        ),
       );
     },
   },

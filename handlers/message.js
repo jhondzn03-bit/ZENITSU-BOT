@@ -21,6 +21,7 @@ import { findParticipant } from '../lib/targets.js';
 import { handleCustomCommand } from '../lib/customcmd.js';
 import { decorateText } from '../lib/theme.js';
 import { aiText } from '../lib/api.js';
+import { effectiveSettings, subbotForSock } from '../lib/settings.js';
 
 const messageCache = new Map();
 const spamMap = new Map();
@@ -172,9 +173,17 @@ function adminFlags(meta, sock, senderIds) {
 }
 
 async function makeContext(sock, msg, m, extra = {}) {
-  const { isAdmin = false, isBotAdmin = false, groupMeta = null, subbot = null } = extra;
-  const isOwner = isOwnerNumber(m.senderNumber);
-  const prefix = db().prefix || config.prefix;
+  const {
+    isAdmin = false,
+    isBotAdmin = false,
+    groupMeta = null,
+    subbot = null,
+    isOwner = isOwnerNumber(m.senderNumber),
+    isSubOwner = false,
+    settings = null,
+  } = extra;
+  const eff = settings || effectiveSettings(subbot);
+  const prefix = eff.prefix || config.prefix;
 
   const send = async (content, options = {}) => {
     const prepared = watermarkContent({ ...content });
@@ -188,7 +197,7 @@ async function makeContext(sock, msg, m, extra = {}) {
     // Tema global: solo texto puro (sin imágenes/archivos) y sin menús ya
     // enmarcados. Si no hay tema activo, decorateText devuelve lo mismo.
     const isPlainText = Object.keys(content).length === 0;
-    const themed = isPlainText ? decorateText(text, db().theme) : text;
+    const themed = isPlainText ? decorateText(text, effectiveSettings(subbot).theme) : text;
     return send({ text: withWatermark(themed), ...content }, options);
   };
 
@@ -245,6 +254,8 @@ async function makeContext(sock, msg, m, extra = {}) {
     pushName: m.pushName,
     isGroup: m.isGroup,
     isOwner,
+    isGlobalOwner: isOwner,
+    isSubOwner,
     isAdmin: isOwner || isAdmin,
     isBotAdmin,
     isCreator: isOwner,
@@ -330,8 +341,64 @@ async function handleAutoAi(sock, msg, m) {
   return true;
 }
 
+// Palabras aceptadas para encender un subbot con .bot on.
+const BOT_ON_WORDS = new Set(['on', 'encender', 'prender', 'activar', 'start', '1']);
+
+// Todos los números posibles del remitente (PN directo, alt y metadata del
+// grupo si llegó como LID).
+async function senderNumbers(sock, m) {
+  const numbers = new Set(
+    [m.senderNumber, jidToNumber(m.sender), jidToNumber(m.senderAlt)].filter(Boolean),
+  );
+  if (m.isGroup) {
+    try {
+      const meta = await getGroupMetadata(sock, m.chat);
+      const p =
+        findParticipant(meta, m.sender) ||
+        findParticipant(meta, m.senderAlt) ||
+        findParticipant(meta, m.senderNumber);
+      const real = jidToNumber(p?.phoneNumber || p?.id || p?.lid);
+      if (real) numbers.add(real);
+    } catch {}
+  }
+  return [...numbers];
+}
+
+// ¿Es ".bot on" de un owner (global o del propio subbot)? Es lo ÚNICO que
+// atiende un subbot apagado: no lee, no reacciona y no ejecuta nada más.
+async function isWakeRequest(sock, m, prefix, subbot) {
+  if (!m.body.startsWith(prefix)) return false;
+  const parts = m.body.slice(prefix.length).trim().split(/\s+/);
+  if (String(parts[0] || '').toLowerCase() !== 'bot') return false;
+  if (!BOT_ON_WORDS.has(String(parts[1] || '').toLowerCase())) return false;
+  const numbers = await senderNumbers(sock, m);
+  if (numbers.some((n) => isOwnerNumber(n))) return true;
+  const owner = String(subbot?.owner || '').replace(/\D/g, '');
+  return Boolean(owner) && numbers.includes(owner);
+}
+
 export async function handleMessage(sock, msg) {
   if (!msg?.message) return;
+
+  const store = db();
+  const subbot = subbotForSock(sock);
+  const settings = effectiveSettings(subbot);
+  const prefix = settings.prefix || config.prefix;
+
+  // Subbot apagado (.bot off): silencio total. Sigue conectado para poder
+  // recibir .bot on, pero no marca leído, no reacciona, no responde la IA ni
+  // ejecuta comandos. Solo se atiende .bot on de su owner o de un owner global.
+  let wakeRequest = false;
+  if (subbot?.paused) {
+    if (msg.key.remoteJid === 'status@broadcast') return;
+    if (msg.key.remoteJid?.endsWith('@newsletter')) return;
+    if (msg.key.fromMe && wasSent(msg.key.id)) return;
+    const wakeMsg = serializeMessage(sock, msg);
+    if (!wakeMsg) return;
+    wakeRequest = await isWakeRequest(sock, wakeMsg, prefix, subbot);
+    if (!wakeRequest) return;
+  }
+
   if (msg.key.remoteJid === 'status@broadcast') {
     // Con .autoread o .autostatus activos, el bot marca los estados como vistos.
     if (db().autoStatus || db().autoRead) {
@@ -357,10 +424,8 @@ export async function handleMessage(sock, msg) {
     return;
   }
 
-  const store = db();
   store.stats.messages = (store.stats.messages || 0) + 1;
 
-  const prefix = store.prefix || config.prefix;
   const isCommand = m.body.startsWith(prefix);
 
   let owner = isOwnerNumber(m.senderNumber);
@@ -407,12 +472,27 @@ export async function handleMessage(sock, msg) {
     } catch {}
   }
 
-  // Modo de uso.
-  if (store.mode === 'self' && !owner) return;
-  if (store.mode === 'group' && !m.isGroup && !owner) return;
+  // Owner propio del subbot: puede personalizarlo y usar .bot / .setowner,
+  // pero no los comandos peligrosos del owner global.
+  let subOwner = false;
+  if (subbot?.owner) {
+    const ownerNumber = String(subbot.owner).replace(/\D/g, '');
+    const candidates = [
+      m.senderNumber,
+      senderRealNumber,
+      jidToNumber(m.sender),
+      jidToNumber(m.senderAlt),
+    ].filter(Boolean);
+    subOwner = candidates.includes(ownerNumber);
+  }
+
+  // Modo de uso. Un .bot on autorizado siempre pasa, para poder reactivar
+  // un subbot apagado incluso si el modo es restrictivo.
+  if (!wakeRequest && store.mode === 'self' && !owner) return;
+  if (!wakeRequest && store.mode === 'group' && !m.isGroup && !owner) return;
 
   // Grupo silenciado.
-  if (group?.muted && !owner && !isAdmin) return;
+  if (!wakeRequest && group?.muted && !owner && !isAdmin) return;
 
   // Usuario silenciado con .mute: el bot lo ignora por completo y, si es
   // admin del grupo, borra sus mensajes (así el "mute" sí se nota).
@@ -438,12 +518,6 @@ export async function handleMessage(sock, msg) {
 
   // ¿Este mensaje lo está respondiendo un subbot? Si es normal (no premium)
   // no puede usar las categorías premium (descargas e IA por defecto).
-  const subbot = (() => {
-    const number = jidToNumber(sock.user?.id);
-    if (!number) return null;
-    const list = Array.isArray(store.subbots) ? store.subbots : [];
-    return list.find((s) => String(s.number || '').replace(/\D/g, '') === number) || null;
-  })();
   const subbotPremium = Boolean(
     subbot?.premium && (!subbot.premiumUntil || subbot.premiumUntil > Date.now()),
   );
@@ -452,10 +526,19 @@ export async function handleMessage(sock, msg) {
 
   // Subbot silenciado por el owner (.silenciarsubbs): NO responde a nadie,
   // ni siquiera al owner. Se controla desde el bot principal (.activarsubbs).
-  // El bot principal (primary) nunca se silencia.
-  if (subbot?.muted && !subbot?.primary) return;
+  // El bot principal (primary) nunca se silencia. Un .bot on autorizado sí
+  // se responde, para que el owner sepa que quedó encendido.
+  if (!wakeRequest && subbot?.muted && !subbot?.primary) return;
 
-  const ctx = await makeContext(sock, msg, m, { isAdmin, isBotAdmin, groupMeta, subbot });
+  const ctx = await makeContext(sock, msg, m, {
+    isAdmin,
+    isBotAdmin,
+    groupMeta,
+    subbot,
+    isOwner: owner,
+    isSubOwner: subOwner,
+    settings,
+  });
   ctx.isAdmin = owner || isAdmin;
 
   // Auto lectura.
@@ -588,8 +671,15 @@ export async function handleMessage(sock, msg) {
     return;
   }
 
-  if (cmd.owner && !owner) {
-    await ctx.reply('👑 Este comando es exclusivo del *owner*.');
+  // Los comandos de personalización marcados con subOwner también los puede
+  // usar el owner del subbot; el resto sigue siendo solo para owners globales.
+  const canUseOwnerCommand = owner || (cmd.subOwner && subOwner);
+  if (cmd.owner && !canUseOwnerCommand) {
+    await ctx.reply(
+      cmd.subOwner
+        ? '👑 Este comando es del *owner* de este subbot.'
+        : '👑 Este comando es exclusivo del *owner*.',
+    );
     return;
   }
   if (cmd.group && !m.isGroup) {
