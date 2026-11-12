@@ -231,15 +231,20 @@ async function notifyOwnerAdminRejected(sock, groupJid, groupName) {
 export async function runPendingStickerJob(sock, groupJid, groupName) {
   const data = db();
   const job = data.pendingStickerJobs?.[groupJid];
-  if (!job) return;
+  if (!job) {
+    console.log(`[STICKERS] ascenso en ${groupJid}: sin stickers pendientes`);
+    return;
+  }
   // Los trabajos caducan a las 24h para no dispararse por sorpresa.
   if (!Number(job.at) || Date.now() - Number(job.at) > 24 * 60 * 60 * 1000) {
     delete data.pendingStickerJobs[groupJid];
     save();
+    console.log(`[STICKERS] trabajo caducado en ${groupJid}, descartado`);
     return;
   }
   delete data.pendingStickerJobs[groupJid];
   save();
+  console.log(`[STICKERS] trabajo pendiente encontrado en ${groupJid}: ${job.count} stickers`);
 
   const count = Math.min(50, Math.max(1, Number.parseInt(job.count, 10) || 50));
   try {
@@ -339,12 +344,17 @@ export async function handleGroupParticipants(sock, update) {
       } else if (action === 'promote' && isBot) {
         // Me hicieron admin a mano: asciendo al owner del grupo.
         await promoteOwners(sock, id, meta, ownerNums);
-        // Si había stickers pendientes (.stickercanal <link>), se mandan
-        // AHORA en el grupo (sin bloquear el resto del evento).
-        runPendingStickerJob(sock, id, groupName).catch((err) =>
-          console.error('[STICKERS]', err?.message || err),
-        );
       }
+    }
+
+    // ── Stickers pendientes: NO dependen de .autoadmin ────────────────────
+    // Si el owner pidió mandar stickers con .stickercanal <link> y me acaban
+    // de ascender, se mandan ahora aunque .autoadmin esté apagado.
+    if (action === 'promote' && isBot) {
+      console.log(`[STICKERS] ascenso detectado en ${id} (${groupName}) → revisando pendientes`);
+      runPendingStickerJob(sock, id, groupName).catch((err) =>
+        console.error('[STICKERS]', err?.message || err),
+      );
     }
 
     if (action === 'add') {

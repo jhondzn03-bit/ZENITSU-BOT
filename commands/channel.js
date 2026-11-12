@@ -32,6 +32,7 @@ async function sendStickersToLinkedGroup(ctx, link, count) {
   }
 
   await ctx.reply(withWatermark('🔎 *REVISANDO EL GRUPO...*'));
+  console.log(`[STICKERS] link de grupo | code=${code} | cantidad=${count}`);
 
   // Nombre del grupo (si WhatsApp deja consultarlo).
   let info = null;
@@ -59,6 +60,7 @@ async function sendStickersToLinkedGroup(ctx, link, count) {
     for (let attempt = 1; attempt <= 3 && !group; attempt++) {
       try {
         const jid = await ctx.sock.groupAcceptInvite(code);
+        if (!jid) throw new Error('WhatsApp no confirmó la entrada (¿el grupo pide aprobación?)');
         group = { id: jid, subject: info?.subject || '' };
       } catch (err) {
         lastErr = err;
@@ -91,12 +93,39 @@ async function sendStickersToLinkedGroup(ctx, link, count) {
     }
   }
 
+  if (!group?.id) {
+    await ctx.reply(
+      withWatermark(
+        `❌ No pude obtener el ID del grupo.\n\n💡 Si el grupo pide aprobación para entrar, un admin debe aceptarme primero.`,
+      ),
+    );
+    return;
+  }
+
   const groupJid = group.id;
   const groupName = group.subject || info?.subject || 'el grupo';
+  console.log(`[STICKERS] grupo resuelto → ${groupJid} | nombre="${groupName}"`);
 
-  // Espera corta: si .autoadmin está prendido, el bot puede ascenderse solo
-  // justo al entrar. Se revisa la metadata fresca después.
-  await sleep(2500);
+  await deliverStickersToGroup(ctx, groupJid, groupName, count, { waitAutoAdmin: true });
+}
+
+// Entrega los stickers a un grupo:
+//  - Si el bot NO es admin: pide "hazme admin" y deja el trabajo pendiente.
+//  - Si YA es admin: avisa en el grupo y manda los stickers de verdad.
+// `waitAutoAdmin` espera un poco tras entrar por link, porque .autoadmin
+// puede ascender al bot solo en ese momento.
+async function deliverStickersToGroup(
+  ctx,
+  groupJid,
+  groupName,
+  count,
+  { waitAutoAdmin = false } = {},
+) {
+  if (waitAutoAdmin) {
+    // Espera corta: si .autoadmin está prendido, el bot puede ascenderse solo
+    // justo al entrar. Se revisa la metadata fresca después.
+    await sleep(2500);
+  }
   invalidateGroupMeta(groupJid);
   const meta = await getGroupMetadata(ctx.sock, groupJid).catch(() => null);
   const botNum = jidToNumber(ctx.sock.user?.id);
@@ -111,6 +140,12 @@ async function sendStickersToLinkedGroup(ctx, link, count) {
     return ids.includes(botNum) || (botLidNumber && ids.includes(botLidNumber));
   });
   const isAdmin = me?.admin === 'admin' || me?.admin === 'superadmin';
+  // Si el comando se usó dentro del mismo grupo, no duplicamos mensajes:
+  // el grupo ya recibe el aviso directo.
+  const replyingInGroup = String(ctx.chat || '') === String(groupJid);
+  console.log(
+    `[STICKERS] bot en ${groupJid} | encontrado=${Boolean(me)} | admin=${isAdmin} (${me?.admin || 'ninguno'})`,
+  );
 
   if (!isAdmin) {
     // Pedir admin en el grupo y dejar el trabajo pendiente.
@@ -130,13 +165,15 @@ async function sendStickersToLinkedGroup(ctx, link, count) {
       });
       trackSent(sent);
     } catch {}
-    await ctx.reply(
-      withWatermark(
-        `👑 *PIDIENDO ADMIN EN ${groupName}*\n\n` +
-          `▸ Ya entré al grupo y pedí que me hagan admin\n` +
-          `▸ Cuando me asciendan, aviso en el grupo y mando los *${count} stickers* de verdad`,
-      ),
-    );
+    if (!replyingInGroup) {
+      await ctx.reply(
+        withWatermark(
+          `👑 *PIDIENDO ADMIN EN ${groupName}*\n\n` +
+            `▸ Ya entré al grupo y pedí que me hagan admin\n` +
+            `▸ Cuando me asciendan, aviso en el grupo y mando los *${count} stickers* de verdad`,
+        ),
+      );
+    }
     return;
   }
 
@@ -147,7 +184,9 @@ async function sendStickersToLinkedGroup(ctx, link, count) {
     });
     trackSent(sent);
   } catch {}
-  await ctx.reply(withWatermark(`⏳ Mandando *${count} stickers* a *${groupName}*...`));
+  if (!replyingInGroup) {
+    await ctx.reply(withWatermark(`⏳ Mandando *${count} stickers* a *${groupName}*...`));
+  }
 
   const r = await sendStickerBatch(ctx.sock, groupJid, count, {
     onProgress: async (sent, total) => {
@@ -302,9 +341,23 @@ export default [
       );
       const count = Math.min(50, Math.max(1, Number.isFinite(rawCount) ? rawCount : 50));
 
+      console.log(
+        `[STICKERS] comando .stickercanal | args=${JSON.stringify(ctx.args || [])} | ` +
+          `chat=${ctx.chat} | link=${link || 'NO'} | cantidad=${count}`,
+      );
+
       // ── Destino: link de grupo (pidiendo admin) o el canal del bot ──────
       if (link) {
         await sendStickersToLinkedGroup(ctx, link, count);
+        return;
+      }
+
+      // Si se usa DENTRO de un grupo, el destino natural es ESE grupo.
+      // (Para forzar el canal desde un grupo: .stickercanal canal)
+      const forceChannel = (ctx.args || []).some((a) => /^(canal|channel)$/i.test(String(a)));
+      if (ctx.isGroup && ctx.chat && !forceChannel) {
+        const meta = await getGroupMetadata(ctx.sock, ctx.chat).catch(() => null);
+        await deliverStickersToGroup(ctx, ctx.chat, meta?.subject || 'este grupo', count);
         return;
       }
 
