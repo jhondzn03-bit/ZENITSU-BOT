@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import qrcode from 'qrcode-terminal';
 import { config, ROOT } from './config.js';
 import { db, save, saveNow } from './lib/db.js';
-import { cleanTmp, formatDate, jidToNumber, numberToJid, sleep, withWatermark } from './lib/utils.js';
+import { applyChannelBanner, cleanTmp, formatDate, jidToNumber, numberToJid, sleep, withWatermark } from './lib/utils.js';
 import { commands } from './commands/index.js';
 import { handleMessage, handleDeletedMessage, messageCache } from './handlers/message.js';
 import { handleGroupParticipants, handleGroupIconChange } from './handlers/group.js';
@@ -203,7 +203,14 @@ async function start() {
 
   let version;
   try {
-    ({ version } = await fetchLatestBaileysVersion());
+    // Con tope de tiempo: si el servicio de versiones de Baileys está lento,
+    // el arranque no se queda colgado (se usa la versión que trae el paquete).
+    ({ version } = await Promise.race([
+      fetchLatestBaileysVersion(),
+      sleep(8000).then(() => {
+        throw new Error('timeout');
+      }),
+    ]));
   } catch {
     version = undefined;
   }
@@ -225,6 +232,8 @@ async function start() {
   });
 
   globalThis.__ZENITSU_SOCK__ = sock;
+  // Todos los mensajes salen con el banner "⮩ Reenviado desde <canal>".
+  applyChannelBanner(sock);
   sock.ev.on('creds.update', saveCreds);
 
   sock.ev.on('connection.update', async (update) => {

@@ -1,5 +1,6 @@
 import {
   channelAutoUpdates,
+  getChannelInfo,
   getChannelJid,
   sendToChannel,
   setChannel,
@@ -52,9 +53,9 @@ export default [
         }
         try {
           await ctx.reply('⏳ Verificando el canal...');
-          const jid = await setChannel(ctx.sock, link);
+          const { jid, name } = await setChannel(ctx.sock, link);
           await ctx.reply(
-            withWatermark(`✅ *CANAL CONFIGURADO*\n\n🆔 ${jid}\n\nCada vez que arranque publicaré las actualizaciones ahí.\n_Desactívalo con_ *${ctx.prefix}canal off*`),
+            withWatermark(`✅ *CANAL CONFIGURADO*\n\n▸ Nombre: ${name || '(sin nombre)'}\n🆔 ${jid}\n\nCada vez que arranque publicaré las actualizaciones ahí.\n_Desactívalo con_ *${ctx.prefix}canal off*`),
           );
         } catch (err) {
           await ctx.reply(withWatermark(`❌ ${err.message || err}`));
@@ -115,6 +116,55 @@ export default [
           ? withWatermark(`📢 *Publicado en el canal.* ✅`)
           : withWatermark(`❌ No pude publicar (¿el canal está configurado?). Usa *${ctx.prefix}canal set <enlace>*`),
       );
+    },
+  },
+  {
+    name: 'setcanal',
+    aliases: ['canalset', 'configurarcanal', 'cambiarcanal', 'nuevocanal'],
+    category: 'owner',
+    desc: 'Cambia el canal que aparece en el banner "Reenviado desde…" de los mensajes.',
+    usage: 'setcanal https://whatsapp.com/channel/0029Vb...',
+    owner: true,
+    async execute(ctx) {
+      const link = ctx.args.join(' ').trim();
+
+      // Sin enlace: muestra el canal actual y cómo cambiarlo.
+      if (!link) {
+        const info = getChannelInfo();
+        await ctx.reply(
+          withWatermark(
+            `📢 *CANAL ACTUAL*\n\n` +
+              `▸ Nombre: ${info.name || '(sin nombre)'}\n` +
+              `▸ JID: ${info.jid || '(sin configurar)'}\n` +
+              `▸ Código: ${info.invite || '(ninguno)'}\n\n` +
+              `💡 Cámbialo con:\n*${ctx.prefix}setcanal https://whatsapp.com/channel/0029Vb...*\n\n` +
+              `_Ese canal aparecerá en el banner "⮩ Reenviado desde…" de todos los mensajes._`,
+          ),
+        );
+        return;
+      }
+
+      await ctx.reply('⏳ *Verificando el canal...*');
+      try {
+        const { jid, name } = await setChannel(ctx.sock, link);
+        await ctx.reply(
+          withWatermark(
+            `✅ *CANAL ACTUALIZADO*\n\n` +
+              `▸ Nombre: ${name || '(sin nombre)'}\n` +
+              `▸ JID: ${jid}\n\n` +
+              `Desde ahora todos los mensajes llevarán el banner:\n` +
+              `⮩ _Reenviado desde ${name || 'el canal'}_\n\n` +
+              `💡 Compruébalo con *${ctx.prefix}canal info*.`,
+          ),
+        );
+      } catch (err) {
+        await ctx.reply(
+          withWatermark(
+            `❌ No pude cambiar el canal: ${err.message || err}\n\n` +
+              `💡 Asegúrate de que sea un enlace tipo:\nhttps://whatsapp.com/channel/0029Vb...`,
+          ),
+        );
+      }
     },
   },
 ];

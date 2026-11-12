@@ -14,6 +14,7 @@ import {
   instagramDownload,
   mediafireDownload,
   pinterestDownload,
+  pinterestSearch,
   searchYouTube,
   spotifyDownload,
   tiktokDownload,
@@ -118,6 +119,55 @@ async function sendMany(ctx, urls, caption, options = {}) {
     }
   }
   if (!sent) throw new Error('No se pudo enviar ningún archivo');
+}
+
+// Envía un álbum de hasta 30 imágenes. Primero se crea el mensaje padre
+// (albumMessage) y luego cada imagen se asocia con albumParentKey, que es
+// como WhatsApp agrupa los álbumes. Si el padre falla, se envían sueltas.
+async function sendImageAlbum(ctx, images, caption = '') {
+  const seen = new Set();
+  const list = images
+    .map((r) => (typeof r === 'string' ? { url: r, full: r } : r))
+    .filter((r) => {
+      const key = r?.full || r?.url;
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 30);
+  if (!list.length) throw new Error('No se encontraron imágenes para enviar');
+
+  let parent = null;
+  try {
+    parent = await ctx.send(
+      { album: { expectedImageCount: list.length, expectedVideoCount: 0 } },
+      { quoted: undefined },
+    );
+  } catch {}
+
+  let sent = 0;
+  for (let i = 0; i < list.length; i++) {
+    try {
+      // Se intenta la versión ligera (736x) y, si Pinterest no la tiene
+      // (pasa con algunos PNG), se usa la imagen original.
+      let buffer = null;
+      for (const candidate of [list[i].url, list[i].full]) {
+        if (!candidate) continue;
+        try {
+          buffer = await fetchBuffer(candidate, {}, 45000);
+          if (buffer?.length) break;
+        } catch {}
+      }
+      if (!buffer?.length) continue;
+      const content = { image: buffer };
+      if (i === 0 && caption) content.caption = caption;
+      if (parent?.key) content.albumParentKey = parent.key;
+      await ctx.send(content, { quoted: undefined });
+      sent++;
+    } catch {}
+  }
+  if (!sent) throw new Error('No pude enviar ninguna imagen');
+  return sent;
 }
 
 function getUrlOrText(ctx) {
@@ -416,17 +466,36 @@ export default [
     name: 'pinterest',
     aliases: ['pin', 'pinterestdl'],
     category: 'downloads',
-    desc: 'Descarga imágenes o videos de Pinterest.',
-    usage: 'pinterest <enlace>',
+    desc: 'Busca imágenes en Pinterest (álbum de 30) o descarga un pin.',
+    usage: 'pin gatitos | pin https://pin.it/...',
     async execute(ctx) {
-      const url = getUrlOrText(ctx);
-      if (!url) {
-        await ctx.reply(`💡 Uso: *${ctx.prefix}pinterest* https://pin.it/...`);
+      const text = ctx.text.trim();
+      if (!text) {
+        await ctx.reply(
+          `💡 *PINTEREST*\n\n` +
+            `▸ *${ctx.prefix}pin gatitos* — busca y envía 30 imágenes\n` +
+            `▸ *${ctx.prefix}pin https://pin.it/...* — descarga un pin`,
+        );
         return;
       }
-      await ctx.reply('📌 *Descargando de Pinterest...*');
-      const r = await pinterestDownload(url);
-      await sendMany(ctx, r.urls, `📌 *Pinterest*\n🔗 ${url}`);
+
+      // Si hay enlace, es una descarga; si no, una búsqueda por texto.
+      const url = extractUrl(text) || (isUrl(ctx.args[0]) ? ctx.args[0] : '');
+      if (url) {
+        await ctx.reply('📌 *Descargando de Pinterest...*');
+        const r = await pinterestDownload(url);
+        await sendMany(ctx, r.urls, `📌 *Pinterest*\n🔗 ${url}`);
+        return;
+      }
+
+      await ctx.reply(`🔍 *Buscando "${truncate(text, 60)}" en Pinterest...*`);
+      const results = await pinterestSearch(text, 30);
+      await ctx.reply(`📌 *${results.length} imágenes encontradas.* Enviando el álbum...`);
+      await sendImageAlbum(
+        ctx,
+        results,
+        `📌 *Pinterest: ${truncate(text, 60)}*\n🖼️ ${results.length} imágenes`,
+      );
     },
   },
   {

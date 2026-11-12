@@ -348,26 +348,49 @@ export async function handleMessage(sock, msg) {
   const store = db();
   store.stats.messages = (store.stats.messages || 0) + 1;
 
+  const prefix = store.prefix || config.prefix;
+  const isCommand = m.body.startsWith(prefix);
+
   let owner = isOwnerNumber(m.senderNumber);
   if (!owner && store.users[m.sender]?.banned) return;
 
   const group = m.isGroup ? getGroup(m.chat) : null;
 
+  // Si el grupo tiene usuarios silenciados, hay que resolver su número real
+  // (puede llegar como LID) y saber si el bot es admin para borrar mensajes.
+  const hasMutedUsers = Boolean(
+    group?.mutedUsers && Object.keys(group.mutedUsers).length > 0,
+  );
+
+  // La metadata del grupo (una llamada a WhatsApp) solo se pide cuando de
+  // verdad hace falta: comandos, grupo silenciado, anti-enlace/anti-spam o
+  // modo privado. Así la charla normal no espera a la red en cada mensaje.
+  const needsGroupMeta =
+    m.isGroup &&
+    (isCommand ||
+      group?.muted ||
+      group?.antiLink ||
+      group?.antiSpam ||
+      hasMutedUsers ||
+      store.mode === 'self');
+
   let groupMeta = null;
   let isAdmin = false;
   let isBotAdmin = false;
-  if (m.isGroup) {
+  let senderRealNumber = '';
+  if (needsGroupMeta) {
     try {
       groupMeta = await getGroupMetadata(sock, m.chat);
       const flags = adminFlags(groupMeta, sock, [m.sender, m.senderAlt, m.senderNumber]);
       isAdmin = flags.isAdmin;
       isBotAdmin = flags.isBotAdmin;
       // Si el remitente llegó como LID, usa el número real del participante
-      // para reconocer al owner.
-      if (!owner && flags.participant) {
-        const realNumber =
-          flags.participant.phoneNumber || flags.participant.id || flags.participant.lid;
-        if (isOwnerNumber(jidToNumber(realNumber))) owner = true;
+      // para reconocer al owner y para los silenciados (.mute).
+      if (flags.participant) {
+        senderRealNumber = jidToNumber(
+          flags.participant.phoneNumber || flags.participant.id || flags.participant.lid,
+        );
+        if (!owner && isOwnerNumber(senderRealNumber)) owner = true;
       }
     } catch {}
   }
@@ -378,6 +401,28 @@ export async function handleMessage(sock, msg) {
 
   // Grupo silenciado.
   if (group?.muted && !owner && !isAdmin) return;
+
+  // Usuario silenciado con .mute: el bot lo ignora por completo y, si es
+  // admin del grupo, borra sus mensajes (así el "mute" sí se nota).
+  if (group?.mutedUsers && !owner && !isAdmin) {
+    const mutedKey = [
+      m.senderNumber,
+      senderRealNumber,
+      jidToNumber(m.sender),
+      jidToNumber(m.senderAlt),
+    ].find((n) => n && group.mutedUsers[n]);
+    if (mutedKey) {
+      if (isBotAdmin) {
+        // Se saca del caché antes de borrar: si no, el anti-eliminar volvería
+        // a publicar el mensaje del usuario silenciado como "eliminado".
+        messageCache.delete(m.id);
+        try {
+          await sock.sendMessage(m.chat, { delete: m.key });
+        } catch {}
+      }
+      return;
+    }
+  }
 
   // ¿Este mensaje lo está respondiendo un subbot? Si es normal (no premium)
   // no puede usar las categorías premium (descargas e IA por defecto).
@@ -468,8 +513,7 @@ export async function handleMessage(sock, msg) {
     }
   }
 
-  const prefix = store.prefix || config.prefix;
-  if (!m.body.startsWith(prefix)) {
+  if (!isCommand) {
     await handleAutoAi(sock, msg, m);
     return;
   }

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { config } from '../config.js';
-import { db, getGroup, save } from '../lib/db.js';
+import { db, getGroup, isOwnerNumber, save } from '../lib/db.js';
 import {
   fetchBuffer,
   formatDate,
@@ -10,6 +10,7 @@ import {
   withWatermark,
 } from '../lib/utils.js';
 import {
+  findParticipant,
   getTargetJid,
   getTargetJids,
   isGroupAdmin,
@@ -145,25 +146,164 @@ export default [
   },
   {
     name: 'mute',
-    aliases: ['botoff'],
+    aliases: ['mutear', 'silenciarusuario'],
     category: 'admin',
-    desc: 'Silencia el bot en este grupo (solo admins podrán usar comandos).',
-    usage: 'mute',
+    desc: 'Silencia a un usuario: el bot ignora y borra sus mensajes en el grupo.',
+    usage: 'mute @usuario | responde a su mensaje | mute 503XXXXXXXX',
+    group: true,
+    admin: true,
+    async execute(ctx) {
+      const g = getGroup(ctx.chat);
+      g.mutedUsers ||= {};
+      const targets = getTargetJids(ctx);
+      if (!targets.length) {
+        const muted = Object.keys(g.mutedUsers);
+        await ctx.reply(
+          `🔇 *SILENCIAR USUARIO*\n\n` +
+            `▸ Menciona: *${ctx.prefix}mute @usuario*\n` +
+            `▸ O responde a su mensaje con *${ctx.prefix}mute*\n` +
+            `▸ O usa su número: *${ctx.prefix}mute 503XXXXXXXX*\n\n` +
+            (muted.length
+              ? `👥 *Silenciados (${muted.length}):*\n${muted.map((n) => `▸ @${n}`).join('\n')}\n\n` +
+                `💡 Reactiva con *${ctx.prefix}unmute @usuario* o *${ctx.prefix}unmute all*.`
+              : `ℹ️ No hay usuarios silenciados en este grupo.`),
+          { mentions: muted.map((n) => numberToJid(n)) },
+        );
+        return;
+      }
+
+      const meta = ctx.groupMeta || (await ctx.getGroupMeta());
+      const botNumber = jidToNumber(ctx.sock?.user?.id);
+      const added = [];
+      const skipped = [];
+      for (const jid of targets) {
+        const p = findParticipant(meta, jid);
+        const num = jidToNumber(participantJid(p) || jid);
+        if (!num) continue;
+        if (num === botNumber) {
+          skipped.push({ num, why: 'soy yo' });
+          continue;
+        }
+        if (isOwnerNumber(num)) {
+          skipped.push({ num, why: 'owner' });
+          continue;
+        }
+        if (p?.admin === 'admin' || p?.admin === 'superadmin') {
+          skipped.push({ num, why: 'admin' });
+          continue;
+        }
+        g.mutedUsers[num] = { at: Date.now(), by: ctx.senderNumber };
+        added.push(num);
+      }
+
+      if (!added.length) {
+        await ctx.reply(
+          `⚠️ No pude silenciar a nadie.\n\n` +
+            (skipped.length
+              ? skipped.map((s) => `▸ @${s.num}: *${s.why}*`).join('\n')
+              : `💡 Menciona o responde al usuario que quieres silenciar.`),
+          { mentions: skipped.map((s) => numberToJid(s.num)) },
+        );
+        return;
+      }
+
+      save();
+      await ctx.reply(
+        `🔇 *USUARIO SILENCIADO*\n\n` +
+          added.map((n) => `▸ @${n}`).join('\n') +
+          `\n\nEl bot ignorará sus mensajes` +
+          (ctx.isBotAdmin ? ` y los borrará` : '') +
+          `.\n\n💡 Reactiva con *${ctx.prefix}unmute @usuario*.` +
+          (skipped.length
+            ? `\n\n⚠️ No se pueden silenciar:\n${skipped.map((s) => `▸ @${s.num} (${s.why})`).join('\n')}`
+            : ''),
+        { mentions: [...added, ...skipped.map((s) => s.num)].map((n) => numberToJid(n)) },
+      );
+    },
+  },
+  {
+    name: 'unmute',
+    aliases: ['desmutear', 'reactivarusuario'],
+    category: 'admin',
+    desc: 'Reactiva a un usuario silenciado (o a todos con "all").',
+    usage: 'unmute @usuario | unmute all',
+    group: true,
+    admin: true,
+    async execute(ctx) {
+      const g = getGroup(ctx.chat);
+      g.mutedUsers ||= {};
+      const first = String(ctx.args[0] || '').toLowerCase();
+
+      if (first === 'all' || first === 'todos') {
+        const count = Object.keys(g.mutedUsers).length;
+        g.mutedUsers = {};
+        save();
+        await ctx.reply(
+          count
+            ? `🔊 *${count} usuario(s) reactivado(s).* Ya pueden volver a escribir.`
+            : `ℹ️ No hay usuarios silenciados en este grupo.`,
+        );
+        return;
+      }
+
+      const targets = getTargetJids(ctx);
+      if (!targets.length) {
+        const muted = Object.keys(g.mutedUsers);
+        await ctx.reply(
+          muted.length
+            ? `🔇 *SILENCIADOS (${muted.length}):*\n${muted.map((n) => `▸ @${n}`).join('\n')}\n\n` +
+                `💡 Usa *${ctx.prefix}unmute @usuario* o *${ctx.prefix}unmute all*.`
+            : `ℹ️ No hay usuarios silenciados en este grupo.`,
+          { mentions: muted.map((n) => numberToJid(n)) },
+        );
+        return;
+      }
+
+      const meta = ctx.groupMeta || (await ctx.getGroupMeta());
+      const removed = [];
+      for (const jid of targets) {
+        const p = findParticipant(meta, jid);
+        const num = jidToNumber(participantJid(p) || jid);
+        if (num && g.mutedUsers[num]) {
+          delete g.mutedUsers[num];
+          removed.push(num);
+        }
+      }
+
+      if (!removed.length) {
+        await ctx.reply(`ℹ️ Ese usuario no estaba silenciado.`);
+        return;
+      }
+      save();
+      await ctx.reply(
+        `🔊 *USUARIO REACTIVADO*\n\n${removed.map((n) => `▸ @${n}`).join('\n')}\n\nYa puede volver a escribir.`,
+        { mentions: removed.map((n) => numberToJid(n)) },
+      );
+    },
+  },
+  {
+    name: 'botoff',
+    aliases: ['botmute', 'silenciarbot', 'apagarbot'],
+    category: 'admin',
+    desc: 'Silencia el BOT en este grupo (solo admins podrán usar comandos).',
+    usage: 'botoff',
     group: true,
     admin: true,
     async execute(ctx) {
       const g = getGroup(ctx.chat);
       g.muted = true;
       save();
-      await ctx.reply('🔇 *Bot silenciado.*\n\nSolo los administradores podrán usar comandos.');
+      await ctx.reply(
+        `🔇 *Bot silenciado.*\n\nSolo los administradores podrán usar comandos.\n\n💡 Reactívalo con *${ctx.prefix}boton*.`,
+      );
     },
   },
   {
-    name: 'unmute',
-    aliases: ['activar', 'boton'],
+    name: 'boton',
+    aliases: ['botunmute', 'activarbot', 'encenderbot'],
     category: 'admin',
-    desc: 'Reactiva el bot en este grupo.',
-    usage: 'unmute',
+    desc: 'Reactiva el BOT en este grupo.',
+    usage: 'boton',
     group: true,
     admin: true,
     async execute(ctx) {
