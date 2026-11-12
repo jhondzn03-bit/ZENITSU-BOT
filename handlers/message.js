@@ -285,6 +285,14 @@ async function makeContext(sock, msg, m, extra = {}) {
   return ctx;
 }
 
+// Reacciona al mensaje del usuario sin romper nada si falla (grupo sin
+// permisos, mensaje ya borrado, etc.). Con texto vacío se quita la reacción.
+async function reactStatus(sock, m, emoji) {
+  try {
+    await sock.sendMessage(m.chat, { react: { text: emoji, key: m.key } });
+  } catch {}
+}
+
 async function handleAutoAi(sock, msg, m) {
   const chatCfg = getChat(m.chat);
   if (!chatCfg.aiChat) return false;
@@ -293,6 +301,8 @@ async function handleAutoAi(sock, msg, m) {
   if (Date.now() - last < 6000) return true;
   aiCooldown.set(m.chat, Date.now());
 
+  // Reacción de "pensando" mientras la IA responde.
+  await reactStatus(sock, m, '⏳');
   try {
     const history = aiHistory.get(m.chat) || [];
     const answer = await aiText(m.body, { history });
@@ -307,6 +317,7 @@ async function handleAutoAi(sock, msg, m) {
       { quoted: msg },
     );
     trackSent(sent);
+    await reactStatus(sock, m, '✅');
   } catch (err) {
     const sent = await sock.sendMessage(
       m.chat,
@@ -314,6 +325,7 @@ async function handleAutoAi(sock, msg, m) {
       { quoted: msg },
     );
     trackSent(sent);
+    await reactStatus(sock, m, '❌');
   }
   return true;
 }
@@ -593,9 +605,13 @@ export async function handleMessage(sock, msg) {
     return;
   }
 
+  // Reacción de "trabajando" mientras corre el comando y "listo" al terminar.
+  await reactStatus(sock, m, '⏳');
   try {
     await cmd.execute(ctx);
+    await reactStatus(sock, m, '✅');
   } catch (err) {
+    await reactStatus(sock, m, '❌');
     console.error(`[CMD:${commandName}]`, err);
     const extra = owner && err?.stack ? `\n\n\`\`\`${truncate(err.stack, 800)}\`\`\`` : '';
     try {
