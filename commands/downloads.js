@@ -121,9 +121,24 @@ async function sendMany(ctx, urls, caption, options = {}) {
   if (!sent) throw new Error('No se pudo enviar ningún archivo');
 }
 
-// Envía un álbum de hasta 30 imágenes. Primero se crea el mensaje padre
-// (albumMessage) y luego cada imagen se asocia con albumParentKey, que es
-// como WhatsApp agrupa los álbumes. Si el padre falla, se envían sueltas.
+// Descarga una imagen probando primero la versión ligera (736x) y, si
+// Pinterest no la tiene (pasa con algunos PNG), la original.
+async function fetchPinImage(item) {
+  for (const candidate of [item?.url, item?.full]) {
+    if (!candidate) continue;
+    try {
+      const buffer = await fetchBuffer(candidate, {}, 45000);
+      if (buffer?.length) return buffer;
+    } catch {}
+  }
+  return null;
+}
+
+// Envía un álbum de hasta 30 imágenes. Se descargan TODAS primero (para que
+// expectedImageCount coincida con las que de verdad se envían, si no WhatsApp
+// puede rechazar el álbum) y luego se crea el mensaje padre (albumMessage);
+// cada imagen se asocia con albumParentKey, que es como se agrupan. Si el
+// padre falla, las imágenes se envían sueltas igualmente.
 async function sendImageAlbum(ctx, images, caption = '') {
   const seen = new Set();
   const list = images
@@ -137,33 +152,38 @@ async function sendImageAlbum(ctx, images, caption = '') {
     .slice(0, 30);
   if (!list.length) throw new Error('No se encontraron imágenes para enviar');
 
+  // Descarga en paralelo (4 a la vez) conservando el orden original.
+  const buffers = new Array(list.length).fill(null);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < list.length) {
+      const i = cursor++;
+      buffers[i] = await fetchPinImage(list[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, list.length) }, worker));
+
+  const ready = buffers.filter(Boolean);
+  if (!ready.length) throw new Error('No pude descargar ninguna imagen de Pinterest');
+
   let parent = null;
   try {
     parent = await ctx.send(
-      { album: { expectedImageCount: list.length, expectedVideoCount: 0 } },
+      { album: { expectedImageCount: ready.length, expectedVideoCount: 0 } },
       { quoted: undefined },
     );
   } catch {}
 
   let sent = 0;
-  for (let i = 0; i < list.length; i++) {
+  let first = true;
+  for (const buffer of ready) {
     try {
-      // Se intenta la versión ligera (736x) y, si Pinterest no la tiene
-      // (pasa con algunos PNG), se usa la imagen original.
-      let buffer = null;
-      for (const candidate of [list[i].url, list[i].full]) {
-        if (!candidate) continue;
-        try {
-          buffer = await fetchBuffer(candidate, {}, 45000);
-          if (buffer?.length) break;
-        } catch {}
-      }
-      if (!buffer?.length) continue;
       const content = { image: buffer };
-      if (i === 0 && caption) content.caption = caption;
+      if (first && caption) content.caption = caption;
       if (parent?.key) content.albumParentKey = parent.key;
       await ctx.send(content, { quoted: undefined });
       sent++;
+      first = false;
     } catch {}
   }
   if (!sent) throw new Error('No pude enviar ninguna imagen');
