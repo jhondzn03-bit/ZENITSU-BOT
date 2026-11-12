@@ -171,7 +171,7 @@ export default [
     owner: true,
     async execute(ctx) {
       const rawCount = Number.parseInt(ctx.args[0], 10);
-      const count = Math.min(30, Math.max(1, Number.isFinite(rawCount) ? rawCount : 30));
+      const count = Math.min(50, Math.max(1, Number.isFinite(rawCount) ? rawCount : 50));
 
       const jid = await getChannelJid(ctx.sock).catch(() => null);
       if (!jid) {
@@ -197,7 +197,7 @@ export default [
       const pack = data.stickerPack || 'ZENITSU BOT';
       const author = data.stickerAuthor || 'Zenitsu';
 
-      const candidates = await collectImageUrls(Math.min(120, count * 4));
+      const candidates = await collectImageUrls(Math.min(240, count * 4));
       if (!candidates.length) {
         await ctx.reply(
           withWatermark('❌ No pude obtener imágenes para convertir en stickers. Inténtalo de nuevo.'),
