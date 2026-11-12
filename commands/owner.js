@@ -72,35 +72,98 @@ function buildFarewell() {
   );
 }
 
-// Resuelve a qué usuario apunta un comando de subbots. Acepta:
+// Convierte un JID con número real (…@s.whatsapp.net) al teléfono.
+function phoneFromJid(jid) {
+  const s = String(jid || '');
+  if (!s.endsWith('@s.whatsapp.net')) return '';
+  const n = jidToNumber(s);
+  return n.length >= 7 && n.length <= 15 ? n : '';
+}
+
+// Resuelve el teléfono real de un JID que puede venir como LID (…@lid).
+// Prueba el mapeo de Baileys, la metadata del grupo y los subbots conocidos.
+async function resolvePhoneFromJid(ctx, jid) {
+  const direct = phoneFromJid(jid);
+  if (direct) return direct;
+  const s = String(jid || '');
+  if (!s.endsWith('@lid')) return '';
+
+  // 1. Metadata del grupo: el participante suele traer phoneNumber (rápido,
+  // ya está cacheada por getGroupMeta).
+  if (ctx.isGroup && ctx.getGroupMeta) {
+    try {
+      const meta = await ctx.getGroupMeta();
+      const p = findParticipant(meta, s);
+      for (const j of [p?.phoneNumber, p?.id, p?.lid]) {
+        const n = phoneFromJid(j || '');
+        if (n) return n;
+      }
+    } catch {}
+  }
+
+  // 2. Mapeo LID → PN de Baileys.
+  try {
+    const pn = await Promise.race([
+      ctx.sock?.signalRepository?.lidMapping?.getPNForLID(s),
+      sleep(6000).then(() => null),
+    ]);
+    const n = phoneFromJid(pn || '');
+    if (n) return n;
+  } catch {}
+
+  // 3. Comparar con el LID de cada subbot registrado (PN → LID).
+  try {
+    const { listSubbots } = await import('../lib/subbots.js');
+    for (const sub of listSubbots()) {
+      const pnJid = String(sub.jid || '').endsWith('@s.whatsapp.net')
+        ? sub.jid
+        : `${sub.number}@s.whatsapp.net`;
+      const lid = await Promise.race([
+        ctx.sock?.signalRepository?.lidMapping?.getLIDForPN(pnJid),
+        sleep(4000).then(() => null),
+      ]);
+      if (lid && jidToNumber(lid) === jidToNumber(s)) {
+        return String(sub.number || '').replace(/\D/g, '');
+      }
+    }
+  } catch {}
+
+  return '';
+}
+
+// Resuelve a qué subbot apunta un comando de subbots. Acepta:
 //   .prem @user        → el mencionado
 //   .prem              (respondiendo a su mensaje) → el citado
 //   .prem 50312345678  → el número escrito
-// Siempre devuelve UN SOLO número: el resto de usuarios no se toca.
+// Siempre devuelve UN SOLO número (el real, nunca un LID) y, si existe,
+// el registro del subbot para no crear entradas basura.
 async function resolveSubbotTarget(ctx) {
-  // 1. Mención: .prem @user
-  if (ctx.mentioned?.length) {
-    let jid = ctx.mentioned[0];
-    let num = jidToNumber(jid);
-    // En grupos la mención puede llegar como LID: resuelve el número real.
-    if (jid?.endsWith('@lid') && ctx.isGroup && ctx.getGroupMeta) {
-      try {
-        const meta = await ctx.getGroupMeta();
-        const p = findParticipant(meta, jid);
-        const real = p?.phoneNumber || p?.id;
-        if (real) num = jidToNumber(real);
-      } catch {}
-    }
-    if (num.length >= 7 && num.length <= 15) return { number: num, via: 'mención' };
-  }
-  // 2. Respuesta: .prem respondiendo al mensaje del usuario
-  if (ctx.quotedSender) {
-    const num = jidToNumber(ctx.quotedSender);
-    if (num.length >= 7 && num.length <= 15) return { number: num, via: 'respuesta' };
-  }
-  // 3. Número directo: .prem 50312345678
+  const candidates = [];
+  if (ctx.mentioned?.length) candidates.push({ jid: ctx.mentioned[0], via: 'mención' });
+  if (ctx.quotedSender) candidates.push({ jid: ctx.quotedSender, via: 'respuesta' });
   const arg = String(ctx.args[0] || '').replace(/\D/g, '');
-  if (arg.length >= 7 && arg.length <= 15) return { number: arg, via: 'número' };
+  if (arg.length >= 7 && arg.length <= 15) candidates.push({ number: arg, via: 'número' });
+
+  const { listSubbots } = await import('../lib/subbots.js');
+  const known = listSubbots();
+  const digitsOf = (v) => String(v || '').replace(/\D/g, '');
+  const findRecord = (num) => known.find((s) => digitsOf(s.number) === num) || null;
+  const canonical = (num, via) => {
+    const record = findRecord(num);
+    // Si ya existe, se devuelve el número guardado (siempre el real).
+    return { number: record ? digitsOf(record.number) : num, via, record };
+  };
+
+  for (const c of candidates) {
+    if (c.number) return canonical(c.number, c.via);
+    const num = await resolvePhoneFromJid(ctx, c.jid);
+    if (num) return canonical(num, c.via);
+    // Último recurso: el JID coincide exacto con el guardado del subbot.
+    const byJid = known.find((s) => String(s.jid || '') === String(c.jid || ''));
+    if (byJid) {
+      return { number: digitsOf(byJid.number), via: c.via, record: byJid };
+    }
+  }
   return null;
 }
 
@@ -844,11 +907,20 @@ export default [
         `3. Elige «Vincular con número de teléfono».\n` +
         `4. Escribe el código: *${pretty(code)}*\n\n` +
         `⚠️ Caduca en ~60 segundos. Si caduca, usa de nuevo *${ctx.prefix}code ${number}*.`;
+      // El código va también en un mensaje aparte (2 mensajes en total),
+      // para poder copiarlo rápido sin buscar dentro del texto.
+      const sendCode = async (code) => {
+        await ctx.reply(codeReply(code));
+        await ctx.reply(`🔢 *CÓDIGO:* \`\`\`${pretty(code)}\`\`\``);
+      };
 
       // Ya conectado: no hay nada que hacer.
       if (isSubbotConnected(number)) {
         const rec = addSubbot(number, customName || `Zenitsu${number.slice(-2)}`);
-        await ctx.reply(`✅ El subbot *${rec.name}* (+${number}) ya está *conectado*.`);
+        const prem = rec.premium && (!rec.premiumUntil || rec.premiumUntil > Date.now());
+        await ctx.reply(
+          `✅ El subbot *${rec.name}* (+${number}) ya está *conectado*${prem ? ' · 💎 *PREMIUM*' : ''}.`,
+        );
         return;
       }
 
@@ -864,12 +936,14 @@ export default [
           return;
         }
         const code = (await entry?.requestCode?.(true)) || entry?.pairingCode || '';
-        await ctx.reply(
-          code
-            ? codeReply(code)
-            : `⏳ La vinculación de *+${number}* está en curso.\n\n` +
-                `Espera unos segundos y vuelve a usar *${ctx.prefix}code ${number}*.`,
-        );
+        if (code) {
+          await sendCode(code);
+        } else {
+          await ctx.reply(
+            `⏳ La vinculación de *+${number}* está en curso.\n\n` +
+              `Espera unos segundos y vuelve a usar *${ctx.prefix}code ${number}*.`,
+          );
+        }
         return;
       }
 
@@ -918,7 +992,7 @@ export default [
         ]);
 
         if (outcome.code) {
-          await ctx.reply(codeReply(outcome.code));
+          await sendCode(outcome.code);
         } else if (outcome.timeout) {
           await ctx.reply(
             `⌛ No pude generar el código de *+${number}* a tiempo.\n\n` +
@@ -979,9 +1053,11 @@ export default [
         const activo = s.premium && (!s.premiumUntil || s.premiumUntil > Date.now());
         const restante =
           activo && s.premiumUntil
-            ? ` · ⏳ ${Math.max(1, Math.ceil((s.premiumUntil - Date.now()) / 86400000))}d`
+            ? ` · ⏳ ${Math.max(1, Math.ceil((s.premiumUntil - Date.now()) / 86400000))} día(s)`
             : '';
-        return `${s.primary ? '👑' : s.muted ? '🔇' : '🟢'} *${s.name}* · +${s.number}${s.primary ? ' (PRINCIPAL)' : ''}${activo ? ` 💎${restante}` : ''}${s.jid ? `\n   🆔 ${s.jid}` : ''}`;
+        const premiumTag = activo ? `\n   💎 *PREMIUM*${s.premiumUntil ? restante : ' · ♾️ permanente'}` : '';
+        const icon = s.primary ? '👑' : s.muted ? '🔇' : '🟢';
+        return `${icon} *${s.name}* · +${s.number}${s.primary ? ' (PRINCIPAL)' : ''}${premiumTag}${s.jid ? `\n   🆔 ${s.jid}` : ''}`;
       });
       await ctx.reply(
         `🤖 *SUBBOTS CONECTADOS*\n\n` +
@@ -990,7 +1066,7 @@ export default [
           `💎 Premium: *${premiumCount}*\n\n` +
           `${lines.join('\n\n')}\n\n` +
           `👑 Principal · 🟢 Conectado · 🔇 Silenciado · 💎 Premium\n\n` +
-          `💡 Da premium con *${ctx.prefix}prem <número> [días]* · Silencia a todos con *${ctx.prefix}silenciarsubbs* · Elige el bot principal con *${ctx.prefix}setprimary <número>*`,
+          `💡 Da premium con *${ctx.prefix}prem <número> [días]* · Quítalo con *${ctx.prefix}unprem <número>* · Silencia a todos con *${ctx.prefix}silenciarsubbs* · Elige el bot principal con *${ctx.prefix}setprimary <número>*`,
       );
     },
   },
@@ -1011,12 +1087,24 @@ export default [
         );
         return;
       }
+      if (!target.record) {
+        await ctx.reply(
+          `❌ El número *+${target.number}* no es un subbot registrado.\n\n` +
+            `Primero vincúlalo con *${ctx.prefix}code ${target.number}* y luego dale premium.\n` +
+            `Así el premium se aplica al bot correcto (nunca a un LID).`,
+        );
+        return;
+      }
       const days = parseDays(ctx.args);
       const { setSubbotPremium } = await import('../lib/subbots.js');
       const record = setSubbotPremium(target.number, days);
       const vigencia = days > 0 ? `*${days}* día(s)` : 'permanente ♾️';
       await ctx.reply(
-        `💎 *PREMIUM ACTIVADO*\n\n🤖 Subbot: *${record.name}*\n📱 +${record.number}\n⏳ Duración: ${vigencia}\n\nDesbloqueado: 📥 descargas y 🤖 IA.\n▸ Detectado por ${target.via} (nadie más recibió premium).`,
+        `💎 *PREMIUM ACTIVADO*\n\n` +
+          `🤖 Subbot: *${record.name}*\n📱 +${record.number}\n⏳ Duración: ${vigencia}\n\n` +
+          `✅ Ya aparece como *💎 PREMIUM* en *${ctx.prefix}subbots* y en su *${ctx.prefix}menu*.\n` +
+          `Desbloqueado: 📥 descargas y 🤖 IA.\n` +
+          `▸ Detectado por ${target.via} (nadie más recibió premium).`,
       );
     },
   },

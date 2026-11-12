@@ -93,10 +93,15 @@ async function sendMenu(ctx) {
     mentionTag && text.includes(mentionTag)
       ? [ctx.senderJid || ctx.sender].filter(Boolean)
       : undefined;
-  // Aviso premium al final del menú de un subbot normal.
-  const footerNote = hidePremium
-    ? `\n\n💎 *Subbot normal:* las 📥 descargas y la 🤖 IA son PREMIUM.\nPide el tuyo con *${ctx.prefix}upgrade*.`
-    : '';
+  // Estado del subbot al final del menú.
+  let footerNote = '';
+  if (hidePremium) {
+    footerNote = `\n\n💎 *Subbot normal:* las 📥 descargas y la 🤖 IA son PREMIUM.\nPide el tuyo con *${ctx.prefix}upgrade*.`;
+  } else if (ctx.isSubbotPrimary) {
+    footerNote = '\n\n👑 *Bot principal:* todo desbloqueado.';
+  } else if (ctx.isSubbotPremium) {
+    footerNote = '\n\n💎 *Subbot PREMIUM activo:* descargas e IA desbloqueadas.';
+  }
 
   // La imagen/video del banner y el menú van SIEMPRE en el mismo mensaje.
   const banner = store.banner;
