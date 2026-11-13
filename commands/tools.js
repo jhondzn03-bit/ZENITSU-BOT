@@ -36,7 +36,10 @@ import {
   webSearch,
   imageSearch,
 } from '../lib/api.js';
+import { sendButtons } from '../lib/buttons.js';
 import { mediaToAudio, mediaToSticker, stickerToImage } from '../lib/sticker.js';
+import { sendStickerBatch } from '../lib/stickers.js';
+import { collectStickerlyStickers } from '../lib/stickerly.js';
 import { trackSent } from '../lib/state.js';
 
 const LANG_NAMES = {
@@ -117,6 +120,92 @@ export default [
       });
       const sent = await ctx.sock.sendMessage(ctx.chat, { sticker: webp }, { quoted: ctx.msg });
       trackSent(sent);
+    },
+  },
+  {
+    name: 'botones',
+    aliases: ['buttons', 'probarBotones', 'menubotones', 'botonera'],
+    category: 'tools',
+    desc: 'Envía un mensaje con botones interactivos (prueba de compatibilidad con WhatsApp).',
+    usage: 'botones',
+    async execute(ctx) {
+      await sendButtons(ctx.sock, ctx.chat, {
+        title: '⚡ ZENITSU BOT',
+        text:
+          '*BOTONES INTERACTIVOS*\n\n' +
+          'Toca uno y el bot ejecutará ese comando, igual que si lo escribieras.',
+        footer: '⚡ Respiración del Trueno',
+        buttons: [
+          { id: `${ctx.prefix}menu`, text: '⚡ Menú' },
+          { id: `${ctx.prefix}stickerly 8`, text: '🎨 Stickers' },
+          { id: `${ctx.prefix}canal`, text: '📢 Canal' },
+        ],
+      });
+    },
+  },
+  {
+    name: 'stickerly',
+    aliases: ['stickersly', 'stickly', 'sticklypack'],
+    category: 'tools',
+    desc: 'Manda stickers buenos y transparentes desde Sticker.ly (nada de fotos rectangulares).',
+    usage: 'stickerly [cantidad] [búsqueda]',
+    async execute(ctx) {
+      const args = (ctx.args || []).map((a) => String(a).trim()).filter(Boolean);
+      const raw = Number.parseInt(args.find((a) => /^\d+$/.test(a)) || '', 10);
+      const count = Math.min(30, Math.max(1, Number.isFinite(raw) ? raw : 10));
+      const keyword = args.filter((a) => !/^\d+$/.test(a)).join(' ').trim();
+
+      await ctx.reply(
+        `🎨 *Buscando stickers en Sticker.ly...*` +
+          (keyword ? `\n▸ 🔎 ${keyword}` : '\n▸ 🎲 Búsqueda aleatoria'),
+      );
+
+      let found;
+      try {
+        found = await collectStickerlyStickers(Math.min(90, count * 3), keyword);
+      } catch (err) {
+        await ctx.reply(`❌ Sticker.ly no respondió: ${err?.message || err}`);
+        return;
+      }
+      if (!found.urls.length) {
+        await ctx.reply(
+          `❌ No encontré stickers de *${keyword || found.query}*.\n\n💡 Prueba con otra palabra: gatos, memes, amor, anime...`,
+        );
+        return;
+      }
+
+      const r = await sendStickerBatch(ctx.sock, ctx.chat, count, {
+        candidates: found.urls,
+      });
+      if (!r.sent) {
+        await ctx.reply(
+          `⚠️ No pude enviar stickers.\n\n` +
+            (r.failed ? `❌ Fallidos: *${r.failed}*\n` : '') +
+            (r.skipped ? `🔁 Repetidos omitidos: *${r.skipped}*\n` : '') +
+            (r.errors?.length ? `📝 Motivo: ${r.errors.slice(0, 3).join(' · ')}` : ''),
+        );
+        return;
+      }
+
+      const summary =
+        `✅ *STICKERS DE STICKER.LY*\n\n` +
+        `▸ 🔎 ${found.query}\n` +
+        `📤 Enviados: *${r.sent}*\n` +
+        (r.skipped ? `🔁 Repetidos omitidos: *${r.skipped}*\n` : '') +
+        (r.failed ? `⚠️ Fallidos: *${r.failed}*` : '');
+
+      await sendButtons(ctx.sock, ctx.chat, {
+        text: summary,
+        footer: '⚡ Respiración del Trueno',
+        buttons: [
+          {
+            id: `${ctx.prefix}stickerly ${count}${keyword ? ` ${keyword}` : ''}`,
+            text: '🔁 Más stickers',
+          },
+          { id: `${ctx.prefix}stickerly 10 gatos`, text: '🐱 Gatos' },
+          { id: `${ctx.prefix}menu`, text: '⚡ Menú' },
+        ],
+      });
     },
   },
   {

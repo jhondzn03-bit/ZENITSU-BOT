@@ -1,3 +1,8 @@
+import {
+  downloadContentFromMessage,
+  extractMessageContent,
+  getContentType,
+} from '@whiskeysockets/baileys';
 import { db, getUser, save } from '../lib/db.js';
 import { formatNumber, jidToNumber, randomInt, sleep } from '../lib/utils.js';
 
@@ -340,24 +345,113 @@ export default [
     name: 'ver',
     aliases: ['vv', 'viewonce', 'veronce', 'revelar'],
     category: 'tools',
-    desc: 'Abre y reenvía una foto o video de una sola visualización.',
+    desc: 'Abre y reenvía una foto, video o audio de una sola visualización.',
     usage: 'ver (responde al mensaje de una sola visualización)',
     async execute(ctx) {
-      const target = ctx.quoted?.mediaType ? ctx.quoted : ctx.m.mediaType ? ctx.m : null;
-      if (!target || !['image', 'video', 'audio'].includes(target.mediaType)) {
+      // Tipos de WhatsApp → tipo que espera el desencriptado.
+      const TYPE_MAP = {
+        imageMessage: 'image',
+        videoMessage: 'video',
+        ptvMessage: 'video',
+        audioMessage: 'audio',
+        documentMessage: 'document',
+        stickerMessage: 'sticker',
+      };
+
+      // El mensaje citado llega envuelto en viewOnceMessageV2 (o similar):
+      // se guarda el original y también el contenido ya desenvuelto.
+      const rawQuoted = ctx.m?.contextInfo?.quotedMessage || null;
+      const candidates = [];
+      if (rawQuoted) {
+        candidates.push({
+          raw: rawQuoted,
+          key: {
+            remoteJid: ctx.chat,
+            id: ctx.quoted?.key?.id || '',
+            fromMe: Boolean(ctx.quoted?.key?.fromMe),
+            participant: ctx.quoted?.key?.participant,
+          },
+        });
+      }
+      if (ctx.msg?.message) candidates.push({ raw: ctx.msg.message, key: ctx.msg.key });
+
+      let media = null;
+      for (const c of candidates) {
+        const inner = extractMessageContent(c.raw);
+        const type = inner ? getContentType(inner) : null;
+        if (!type || !TYPE_MAP[type]) continue;
+        media = { ...c, inner, type, mediaType: TYPE_MAP[type] };
+        break;
+      }
+
+      if (!media) {
         await ctx.reply(
-          `👁️ *VER UNA SOLA VISUALIZACIÓN*\n\nResponde a una foto o video de “una sola visualización” con *${ctx.prefix}ver*.`,
+          `👁️ *VER UNA SOLA VISUALIZACIÓN*\n\n` +
+            `Responde a una foto, video o audio de “una sola visualización” con *${ctx.prefix}ver*.\n\n` +
+            `💡 También funciona con fotos, videos y audios normales.`,
         );
         return;
       }
-      const buffer = target === ctx.quoted ? await ctx.downloadQuoted() : await ctx.downloadMedia();
-      const caption = `👁️ *Contenido revelado*\n\n> ZENITSU BOT`;
-      if (target.mediaType === 'image') {
+
+      const download = async () => {
+        const content = extractMessageContent(media.raw)?.[media.type];
+        if (!content) throw new Error('El mensaje no tiene multimedia');
+        const stream = await downloadContentFromMessage(content, media.mediaType);
+        const chunks = [];
+        for await (const chunk of stream) chunks.push(chunk);
+        const buffer = Buffer.concat(chunks);
+        if (!buffer.length) throw new Error('WhatsApp devolvió un archivo vacío');
+        return buffer;
+      };
+
+      let buffer = null;
+      let reason = '';
+      try {
+        buffer = await download();
+      } catch (err) {
+        reason = err?.message || String(err);
+        // Las multimedia de una sola visualización se borran del servidor
+        // después de verse. Se le pide al teléfono que las vuelva a subir.
+        try {
+          if (typeof ctx.sock.updateMediaMessage === 'function' && media.key?.id) {
+            await ctx.sock.updateMediaMessage({ key: media.key, message: media.raw });
+            buffer = await download();
+            reason = '';
+          }
+        } catch (err2) {
+          reason = err2?.message || reason;
+        }
+      }
+
+      if (!buffer?.length) {
+        await ctx.reply(
+          `❌ No pude abrir ese contenido.\n\n` +
+            (reason ? `📝 Motivo: ${reason}\n\n` : '') +
+            `💡 Abre el mensaje una vez en tu teléfono y vuelve a intentarlo con *${ctx.prefix}ver*.`,
+        );
+        return;
+      }
+
+      const caption = '👁️ *Contenido revelado* ⚡';
+      if (media.mediaType === 'image') {
         await ctx.send({ image: buffer, caption });
-      } else if (target.mediaType === 'video') {
-        await ctx.send({ video: buffer, caption });
+      } else if (media.mediaType === 'video') {
+        await ctx.send({ video: buffer, caption, mimetype: 'video/mp4' });
+      } else if (media.mediaType === 'audio') {
+        await ctx.send({
+          audio: buffer,
+          mimetype: 'audio/mp4',
+          fileName: 'zenitsu-audio.m4a',
+        });
+      } else if (media.mediaType === 'sticker') {
+        await ctx.send({ sticker: buffer });
       } else {
-        await ctx.send({ audio: buffer, mimetype: 'audio/mp4', fileName: 'zenitsu-audio.m4a' });
+        const content = extractMessageContent(media.raw)?.[media.type] || {};
+        await ctx.send({
+          document: buffer,
+          mimetype: content.mimetype || 'application/octet-stream',
+          fileName: content.fileName || 'zenitsu-archivo',
+        });
       }
     },
   },

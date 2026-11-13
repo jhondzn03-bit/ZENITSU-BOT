@@ -710,6 +710,9 @@ export default [
 
       if (style === 'reset' || style === 'default') {
         setBotSetting(ctx.subbot, 'menuStyle', DEFAULT_MENU_STYLE);
+        // El modo Navidad global tapaba el estilo elegido: al restablecer se
+        // apaga para que el menú normal se vea de verdad.
+        setBotSetting(ctx.subbot, 'christmas', false);
         await ctx.reply(`✅ Estilo del menú restablecido a *${DEFAULT_MENU_STYLE}*.`);
         return;
       }
@@ -722,9 +725,17 @@ export default [
       }
 
       setBotSetting(ctx.subbot, 'menuStyle', style);
+      // Importante: el modo Navidad global se comía el estilo elegido (siempre
+      // salía el mismo menú). Ahora cada estilo se ve tal cual y solo
+      // "navideno" activa la edición navideña.
+      setBotSetting(ctx.subbot, 'christmas', style === 'navideno');
       const meta = MENU_STYLES[style];
       await ctx.reply(
-        `✅ Estilo del menú cambiado a ${meta.emoji} *${meta.label}*.\n\nEscribe *${ctx.prefix}menu* para verlo.`,
+        `✅ Estilo del menú cambiado a ${meta.emoji} *${meta.label}*.\n\n` +
+          (style === 'navideno'
+            ? '🎄 Modo Navidad *activado*.'
+            : `💡 Navidad global *desactivada* para que se vea este estilo.\nActívala con *${ctx.prefix}navidad on*.`) +
+          `\n\nEscribe *${ctx.prefix}menu* para verlo.`,
       );
     },
   },

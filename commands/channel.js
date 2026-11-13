@@ -53,14 +53,20 @@ async function sendStickersToChannels(ctx, jids, count) {
   let totalSent = 0;
   let totalSkipped = 0;
   let totalFailed = 0;
+  let totalAsImage = 0;
   const failed = [];
+  const reasons = [];
 
   for (const jid of targets) {
     const r = await sendStickerBatch(ctx.sock, jid, count, { candidates });
     totalSent += r.sent || 0;
     totalSkipped += r.skipped || 0;
     totalFailed += r.failed || 0;
+    totalAsImage += r.asImage || 0;
     if (!r.sent) failed.push(jid);
+    for (const e of r.errors || []) {
+      if (reasons.length < 3 && !reasons.includes(e)) reasons.push(e);
+    }
   }
 
   if (!totalSent) {
@@ -69,7 +75,8 @@ async function sendStickersToChannels(ctx, jids, count) {
         `⚠️ No pude subir stickers nuevos.\n\n` +
           (totalSkipped ? `🔁 Repetidos omitidos: *${totalSkipped}*\n` : '') +
           (totalFailed ? `❌ Fallidos: *${totalFailed}*\n` : '') +
-          `\n💡 Vuelve a intentarlo en unos segundos.`,
+          (reasons.length ? `📝 Motivo: ${reasons.join(' · ')}\n` : '') +
+          `\n💡 Revisa que el bot sea *administrador* del canal.`,
       ),
     );
     return;
@@ -82,6 +89,8 @@ async function sendStickersToChannels(ctx, jids, count) {
         `📤 Enviados de verdad: *${totalSent}*\n` +
         (totalSkipped ? `🔁 Repetidos omitidos: *${totalSkipped}*\n` : '') +
         (totalFailed ? `⚠️ Fallidos: *${totalFailed}*\n` : '') +
+        (totalAsImage ? `🖼️ Enviados como imagen (canal sin stickers): *${totalAsImage}*\n` : '') +
+        (reasons.length ? `📝 Motivo: ${reasons.join(' · ')}\n` : '') +
         (failed.length ? `\n❌ Sin envíos en: ${failed.map(label).join(', ')}\n` : '') +
         `\n_Stickers enviados solos, sin el banner «Reenviado desde…»._`,
     ),
