@@ -1,5 +1,6 @@
 import {
   channelAutoUpdates,
+  extractChannelCode,
   getChannelInfo,
   getChannelJid,
   sendToChannel,
@@ -463,6 +464,121 @@ export default [
           ),
         );
       }
+    },
+  },
+  {
+    name: 'checkchannel',
+    aliases: ['checkcanal', 'verificarcanal', 'canalcheck', 'infocanal'],
+    category: 'tools',
+    desc: 'Verifica un canal por su enlace: ID de newsletter, seguidores, estado y datos.',
+    usage: 'checkchannel https://whatsapp.com/channel/0029Vb...',
+    async execute(ctx) {
+      const raw = String(ctx.rawArgs || '').trim();
+      const code =
+        extractChannelCode(raw) ||
+        (raw.split(/\s+/).find((a) => /^[A-Za-z0-9_-]{10,}$/.test(a)) || '') ||
+        (raw ? raw : getChannelInfo().invite || '');
+
+      if (!code) {
+        await ctx.reply(
+          withWatermark(
+            `🔎 *VERIFICAR CANAL*\n\n` +
+              `▸ Uso: *${ctx.prefix}checkchannel <enlace>*\n` +
+              `▸ Ejemplo: *${ctx.prefix}checkchannel https://whatsapp.com/channel/0029Vb...*\n\n` +
+              `_Sin enlace reviso el canal configurado del bot._`,
+          ),
+        );
+        return;
+      }
+
+      await ctx.reply(withWatermark(`🔎 *Verificando canal...*`));
+
+      let meta;
+      try {
+        meta = await ctx.sock.newsletterMetadata('invite', code);
+      } catch (err) {
+        await ctx.reply(
+          withWatermark(
+            `❌ *CANAL NO VÁLIDO*\n\n` +
+              `▸ Código: ${code}\n` +
+              `▸ Error: ${err?.message || err}\n\n` +
+              `💡 Revisa que el enlace sea de un canal público y esté completo.`,
+          ),
+        );
+        return;
+      }
+
+      if (!meta?.id) {
+        await ctx.reply(withWatermark(`❌ No encontré ese canal. ¿El enlace está completo?`));
+        return;
+      }
+
+      const thread = meta.thread_metadata || meta.threadMetadata || meta || {};
+      const pick = (...vals) => vals.find((v) => v !== undefined && v !== null && v !== '');
+      const textOf = (v) => (typeof v === 'string' ? v : v?.text || v?.id || '');
+
+      const name = textOf(pick(thread.name, meta.name)) || '(sin nombre)';
+      const jid = String(pick(meta.id, thread.id) || '');
+      const subs = pick(
+        thread.subscribers_count,
+        thread.subscribersCount,
+        meta.subscribers,
+        meta.subscribers_count,
+      );
+      const created = Number(pick(thread.creation_time, meta.creation_time) || 0);
+      const invite = String(pick(thread.invite, meta.invite, code) || code);
+      const desc = textOf(pick(thread.description, meta.description)).trim();
+      const stateRaw = String(
+        pick(
+          typeof meta.state?.type === 'string' ? meta.state.type : undefined,
+          typeof thread.state?.type === 'string' ? thread.state.type : undefined,
+          typeof meta.state === 'string' ? meta.state : undefined,
+          typeof thread.state === 'string' ? thread.state : undefined,
+        ) || '',
+      );
+      const state =
+        stateRaw === 'ACTIVE'
+          ? '✅ Activo'
+          : stateRaw
+            ? `⚠️ ${stateRaw.replace(/_/g, ' ')}`
+            : '❔ Desconocido';
+      const verified = /VERIFIED/i.test(
+        String(pick(thread.verification, meta.verification) || ''),
+      );
+      const role = String(pick(meta.viewer_metadata?.view_role, thread.viewer_metadata?.view_role) || '');
+      const followers =
+        subs !== undefined && Number.isFinite(Number(subs))
+          ? Number(subs).toLocaleString('es-ES')
+          : '?';
+
+      const lines = [
+        `🔎 *CANAL VERIFICADO*`,
+        '',
+        `▸ Nombre: *${name}*`,
+        `▸ ID newsletter: \`${jid}\``,
+        `▸ Código: \`${invite}\``,
+        `▸ Seguidores: *${followers}*`,
+        `▸ Estado: ${state}`,
+        `▸ Verificado por WhatsApp: ${verified ? '✅ Sí' : '❌ No'}`,
+      ];
+      if (created) {
+        lines.push(
+          `▸ Creado: ${new Date(created * 1000).toLocaleDateString('es-ES', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+          })}`,
+        );
+      }
+      if (role) lines.push(`▸ Tu rol: ${role}`);
+      if (desc) {
+        const clean = desc.replace(/\s+/g, ' ').slice(0, 280);
+        lines.push('', `📝 *Descripción:*`, `_${clean}${desc.length > 280 ? '…' : ''}_`);
+      }
+      lines.push('', `🔗 https://whatsapp.com/channel/${invite}`);
+      lines.push('', `_🌩️ Respiración del Trueno._`);
+
+      await ctx.reply(withWatermark(lines.join('\n')));
     },
   },
 ];

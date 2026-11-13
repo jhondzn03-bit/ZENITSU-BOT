@@ -472,7 +472,7 @@ export default [
   },
   {
     name: 'shop',
-    aliases: ['tienda', 'mercado'],
+    aliases: ['tienda'],
     category: 'economy',
     desc: 'Muestra la tienda de objetos.',
     usage: 'shop',

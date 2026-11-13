@@ -567,7 +567,7 @@ export default [
   },
   {
     name: 'ytdoc',
-    aliases: ['ytvideo', 'ytmp4doc', 'videodoc'],
+    aliases: ['ytmp4doc', 'videodoc'],
     category: 'downloads',
     desc: 'Descarga un video de YouTube como documento (calidad completa).',
     usage: 'ytdoc <enlace>',
@@ -618,7 +618,7 @@ export default [
   },
   {
     name: 'gitclone',
-    aliases: ['repo', 'clonar'],
+    aliases: ['clonar'],
     category: 'downloads',
     desc: 'Descarga un repositorio de GitHub como ZIP.',
     usage: 'gitclone <enlace de github>',

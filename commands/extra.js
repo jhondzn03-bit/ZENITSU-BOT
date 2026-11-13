@@ -33,7 +33,7 @@ function transformCommand(name, aliases, desc, fn) {
 }
 
 export default [
-  transformCommand('reverse', ['invertir'], 'Invierte un texto.', (t) => [...t].reverse().join('')),
+  transformCommand('reverse', [], 'Invierte un texto.', (t) => [...t].reverse().join('')),
   transformCommand('upper', ['mayusculas'], 'Convierte el texto a MAYÚSCULAS.', (t) => t.toUpperCase()),
   transformCommand('lower', ['minusculas'], 'Convierte el texto a minúsculas.', (t) => t.toLowerCase()),
   transformCommand('title', ['titulo'], 'Pone el texto en Formato Título.', (t) =>

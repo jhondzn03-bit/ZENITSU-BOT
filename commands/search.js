@@ -83,7 +83,7 @@ const search = [
   },
   {
     name: 'duck',
-    aliases: ['duckduckgo', 'respuesta', 'instantanea'],
+    aliases: ['duckduckgo', 'instantanea'],
     category: 'search',
     desc: 'Respuesta instantánea de DuckDuckGo.',
     usage: 'duck <tema>',
@@ -214,7 +214,7 @@ const search = [
   },
   {
     name: 'pokemon',
-    aliases: ['pokedex', 'poke'],
+    aliases: ['pokedex'],
     category: 'search',
     desc: 'Ficha completa de un Pokémon.',
     usage: 'pokemon <nombre o número>',

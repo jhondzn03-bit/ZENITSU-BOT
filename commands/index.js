@@ -23,13 +23,37 @@ export const commands = modules.flat().filter((c) => c && c.name);
 
 export const commandMap = new Map();
 
+// 1) Primero TODOS los nombres reales: un comando nunca puede quedar tapado
+//    por el alias de otro (ej: .repo vs el alias "repo" de .gitclone).
 for (const cmd of commands) {
   if (commandMap.has(cmd.name)) {
     console.warn(`[CMD] Comando duplicado: ${cmd.name}`);
   }
   commandMap.set(cmd.name, cmd);
-  for (const alias of cmd.aliases || []) {
-    if (!commandMap.has(alias)) commandMap.set(alias, cmd);
+}
+
+// 2) Después los alias, normalizados a minúsculas (el router busca en
+//    minúsculas: un alias como "soloAdmin" nunca coincidía).
+const aliasOwner = new Map();
+for (const cmd of commands) {
+  for (const raw of cmd.aliases || []) {
+    const alias = String(raw || '').trim().toLowerCase();
+    if (!alias) continue;
+    if (commandMap.has(alias)) {
+      if (commandMap.get(alias) !== cmd) {
+        console.warn(`[CMD] Alias "${alias}" de .${cmd.name} choca con .${alias}; se ignora`);
+      }
+      continue;
+    }
+    if (aliasOwner.has(alias)) {
+      const other = aliasOwner.get(alias);
+      if (other !== cmd) {
+        console.warn(`[CMD] Alias duplicado "${alias}": .${other.name} y .${cmd.name}; se queda .${other.name}`);
+      }
+      continue;
+    }
+    aliasOwner.set(alias, cmd);
+    commandMap.set(alias, cmd);
   }
 }
 

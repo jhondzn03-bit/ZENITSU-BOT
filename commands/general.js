@@ -161,7 +161,7 @@ export default [
   },
   {
     name: 'upgrade',
-    aliases: ['vip', 'mejorar', 'serpremium'],
+    aliases: ['vip', 'serpremium'],
     category: 'general',
     desc: 'Muestra qué incluye un subbot premium y cómo conseguirlo.',
     usage: 'upgrade',
