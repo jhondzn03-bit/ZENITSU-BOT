@@ -3,6 +3,9 @@ import {
   extractChannelCode,
   getChannelInfo,
   getChannelJid,
+  getStickerTargets,
+  isNewsletterJid,
+  resolveChannelTarget,
   sendToChannel,
   setChannel,
   setChannelAutoUpdates,
@@ -11,11 +14,78 @@ import { db, save } from '../lib/db.js';
 import { extractInviteCode } from '../lib/spam.js';
 import { jidToNumber, sleep, toJid, withWatermark } from '../lib/utils.js';
 import { getGroupMetadata, invalidateGroupMeta, trackSent } from '../lib/state.js';
-import { sendStickerBatch } from '../lib/stickers.js';
+import { collectImageUrls, sendStickerBatch } from '../lib/stickers.js';
 
 // ─── Stickers aleatorios ──────────────────────────────────────────────────
 // La lógica de envío real vive en lib/stickers.js (se reutiliza para mandar
 // al canal o a un grupo por link cuando el bot ya es admin).
+
+// ── Envío a uno o varios canales ───────────────────────────────────────────
+// Junta las imágenes UNA vez y las reutiliza en todos los canales destino:
+// así los dos canales reciben los mismos stickers y no se descarga doble.
+async function sendStickersToChannels(ctx, jids, count) {
+  const targets = [...new Set((jids || []).filter(Boolean))];
+  if (!targets.length) return;
+
+  const label = (jid) => {
+    const info = getChannelInfo();
+    return info.jid === jid && info.name ? `${info.name} (${jid})` : jid;
+  };
+
+  await ctx.reply(
+    withWatermark(
+      `⏳ *PREPARANDO ${count} STICKERS...*\n\n` +
+        `📢 Canales destino: *${targets.length}*\n` +
+        targets.map((j) => `▸ ${label(j)}`).join('\n') +
+        `\n\n_Buscando imágenes y convirtiéndolas._`,
+    ),
+  );
+
+  const candidates = await collectImageUrls(Math.min(240, count * 4));
+  if (!candidates.length) {
+    await ctx.reply(
+      withWatermark('❌ No pude obtener imágenes para convertir en stickers. Inténtalo de nuevo.'),
+    );
+    return;
+  }
+
+  let totalSent = 0;
+  let totalSkipped = 0;
+  let totalFailed = 0;
+  const failed = [];
+
+  for (const jid of targets) {
+    const r = await sendStickerBatch(ctx.sock, jid, count, { candidates });
+    totalSent += r.sent || 0;
+    totalSkipped += r.skipped || 0;
+    totalFailed += r.failed || 0;
+    if (!r.sent) failed.push(jid);
+  }
+
+  if (!totalSent) {
+    await ctx.reply(
+      withWatermark(
+        `⚠️ No pude subir stickers nuevos.\n\n` +
+          (totalSkipped ? `🔁 Repetidos omitidos: *${totalSkipped}*\n` : '') +
+          (totalFailed ? `❌ Fallidos: *${totalFailed}*\n` : '') +
+          `\n💡 Vuelve a intentarlo en unos segundos.`,
+      ),
+    );
+    return;
+  }
+
+  await ctx.reply(
+    withWatermark(
+      `✅ *STICKERS SUBIDOS*\n\n` +
+        `📢 Canales: *${targets.length}*\n` +
+        `📤 Enviados de verdad: *${totalSent}*\n` +
+        (totalSkipped ? `🔁 Repetidos omitidos: *${totalSkipped}*\n` : '') +
+        (totalFailed ? `⚠️ Fallidos: *${totalFailed}*\n` : '') +
+        (failed.length ? `\n❌ Sin envíos en: ${failed.map(label).join(', ')}\n` : '') +
+        `\n_Stickers enviados solos, sin el banner «Reenviado desde…»._`,
+    ),
+  );
+}
 
 // ── .stickercanal <link de grupo> ──────────────────────────────────────────
 // El bot entra al grupo (si no está); si no es admin pide "hazme admin" y
@@ -330,91 +400,68 @@ export default [
     name: 'canalsticker',
     aliases: ['stickercanal', 'canalstickers', 'subirstickers', 'stickersalcanal'],
     category: 'owner',
-    desc: 'Manda stickers aleatorios de verdad: al canal o a un grupo por su link (pidiendo admin primero).',
-    usage: 'canalsticker [cantidad] [link de grupo]',
+    desc: 'Manda stickers aleatorios DE VERDAD a los canales del bot (o a un grupo por su link).',
+    usage: 'canalsticker [cantidad] [canal|canales|<ID>|<enlace de canal>|<link de grupo>]',
     owner: true,
     async execute(ctx) {
-      const link =
-        (ctx.args || []).find((a) => /chat\.whatsapp\.com\//i.test(String(a))) || '';
-      const rawCount = Number.parseInt(
-        (ctx.args || []).find((a) => /^\d+$/.test(String(a))) || '',
-        10,
+      const args = (ctx.args || []).map((a) => String(a).trim()).filter(Boolean);
+
+      const groupLink = args.find((a) => /chat\.whatsapp\.com\//i.test(a)) || '';
+      const channelLink = args.find((a) => /whatsapp\.com\/channel\//i.test(a)) || '';
+      const channelId = args.find((a) => isNewsletterJid(a)) || '';
+      const rawCount = Number.parseInt(args.find((a) => /^\d+$/.test(a)) || '', 10);
+      const count = Math.min(50, Math.max(1, Number.isFinite(rawCount) ? rawCount : 20));
+      const forceChannels = args.some((a) =>
+        /^(canal|canales|channel|channels|todos|todo|ambos|both)$/i.test(a),
       );
-      const count = Math.min(50, Math.max(1, Number.isFinite(rawCount) ? rawCount : 50));
 
       console.log(
-        `[STICKERS] comando .stickercanal | args=${JSON.stringify(ctx.args || [])} | ` +
-          `chat=${ctx.chat} | link=${link || 'NO'} | cantidad=${count}`,
+        `[STICKERS] comando .stickercanal | args=${JSON.stringify(args)} | ` +
+          `chat=${ctx.chat} | link=${groupLink || 'NO'} | canal=${channelId || channelLink || 'NO'} | ` +
+          `cantidad=${count}`,
       );
 
-      // ── Destino: link de grupo (pidiendo admin) o el canal del bot ──────
-      if (link) {
-        await sendStickersToLinkedGroup(ctx, link, count);
+      // ── Destino: link de grupo (pidiendo admin), canal concreto o canales ──
+      if (groupLink && !forceChannels && !channelLink && !channelId) {
+        await sendStickersToLinkedGroup(ctx, groupLink, count);
         return;
       }
 
-      // Si se usa DENTRO de un grupo, el destino natural es ESE grupo.
-      // (Para forzar el canal desde un grupo: .stickercanal canal)
-      const forceChannel = (ctx.args || []).some((a) => /^(canal|channel)$/i.test(String(a)));
-      if (ctx.isGroup && ctx.chat && !forceChannel) {
+      // Si se usa DENTRO de un grupo, el destino natural es ESE grupo
+      // (salvo que se pida explícitamente un canal con "canal"/ID/enlace).
+      if (ctx.isGroup && ctx.chat && !forceChannels && !channelLink && !channelId) {
         const meta = await getGroupMetadata(ctx.sock, ctx.chat).catch(() => null);
         await deliverStickersToGroup(ctx, ctx.chat, meta?.subject || 'este grupo', count);
         return;
       }
 
-      const jid = await getChannelJid(ctx.sock).catch(() => null);
-      if (!jid) {
-        await ctx.reply(
-          withWatermark(
-            `⚠️ No hay canal configurado.\n\n💡 Configúralo con *${ctx.prefix}canal set <enlace>*`,
-          ),
-        );
-        return;
-      }
-
-      await ctx.reply(
-        withWatermark(
-          `⏳ *PREPARANDO ${count} STICKERS...*\n\n` +
-            `Buscando imágenes aleatorias y convirtiéndolas. Puede tardar un poco.`,
-        ),
-      );
-
-      const r = await sendStickerBatch(ctx.sock, jid, count, {
-        onProgress: async (sent, total) => {
-          if (sent % 10 === 0 && sent < total) {
-            await ctx.reply(`📤 *${sent}/${total}* stickers subidos al canal...`);
+      // Canal concreto por ID o enlace.
+      if (channelId || channelLink) {
+        let jid = channelId;
+        if (!jid) {
+          try {
+            jid = await resolveChannelTarget(ctx.sock, channelLink);
+          } catch (err) {
+            await ctx.reply(withWatermark(`❌ ${err?.message || err}`));
+            return;
           }
-        },
-      });
-
-      if (r.noImages) {
-        await ctx.reply(
-          withWatermark('❌ No pude obtener imágenes para convertir en stickers. Inténtalo de nuevo.'),
-        );
+        }
+        await sendStickersToChannels(ctx, [jid], count);
         return;
       }
 
-      if (!r.sent) {
+      // Sin destino explícito: TODOS los canales del bot (los dos IDs fijos
+      // del owner + el canal configurado, sin duplicados).
+      const targets = await getStickerTargets(ctx.sock);
+      if (!targets.length) {
         await ctx.reply(
           withWatermark(
-            `⚠️ No pude subir stickers nuevos.\n\n` +
-              (r.skipped ? `🔁 Repetidos omitidos: *${r.skipped}*\n` : '') +
-              (r.failed ? `❌ Fallidos: *${r.failed}*\n` : '') +
-              `\n💡 Vuelve a intentarlo en unos segundos.`,
+            `⚠️ No hay canales destino.\n\n💡 Usa *${ctx.prefix}canalsticker 20 <ID>@newsletter*`,
           ),
         );
         return;
       }
-
-      await ctx.reply(
-        withWatermark(
-          `✅ *STICKERS SUBIDOS AL CANAL*\n\n` +
-            `📤 Enviados de verdad: *${r.sent}*\n` +
-            (r.skipped ? `🔁 Repetidos omitidos: *${r.skipped}*\n` : '') +
-            (r.failed ? `⚠️ Fallidos: *${r.failed}*\n` : '') +
-            `\n_Los stickers se enviaron solos, sin el banner «Reenviado desde…»._`,
-        ),
-      );
+      await sendStickersToChannels(ctx, targets, count);
     },
   },
   {

@@ -1,4 +1,5 @@
 import {
+  fetchBuffer,
   hashToPercent,
   jidToNumber,
   pick,
@@ -295,11 +296,31 @@ export default [
     usage: 'meme',
     async execute(ctx) {
       const m = await getMeme();
-      const caption = `😂 *${truncate(m.title || 'Meme', 200)}*\n\n▸ r/${m.subreddit || 'memes'}\n▸ u/${m.author || '?'}`;
+      const fromPinterest = m.source === 'Pinterest';
+      const caption = fromPinterest
+        ? `😂 *MEME*\n\n▸ 📌 Pinterest\n▸ 🔎 _${truncate(m.query || 'memes', 60)}_`
+        : `😂 *${truncate(m.title || 'Meme', 200)}*\n\n▸ r/${m.subreddit || 'memes'}\n▸ u/${m.author || '?'}`;
       try {
-        await ctx.send({ image: { url: m.url }, caption });
+        // Pinterest bloquea el hotlink: se descarga con referer y se manda el
+        // archivo ya descargado.
+        const image = await fetchBuffer(
+          m.url,
+          {
+            headers: {
+              referer: fromPinterest ? 'https://www.pinterest.com/' : 'https://www.reddit.com/',
+              'user-agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+            },
+          },
+          45000,
+        );
+        await ctx.send({ image, caption });
       } catch {
-        await ctx.reply(`${caption}\n\n🔗 ${m.url}`);
+        try {
+          await ctx.send({ image: { url: m.url }, caption });
+        } catch {
+          await ctx.reply(`${caption}\n\n🔗 ${m.url}`);
+        }
       }
     },
   },
