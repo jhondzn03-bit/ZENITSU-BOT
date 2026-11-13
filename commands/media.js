@@ -127,6 +127,108 @@ async function capPng(buffer, maxBytes = 6 * 1024 * 1024) {
   }
 }
 
+// ¿La imagen tiene canal alfa? (PNG/WEBP transparente). Si lo tiene, la
+// salida debe seguir siendo PNG: guardar en JPG aplana el fondo a negro.
+function probeAlpha(file) {
+  return new Promise((resolve) => {
+    execFile(
+      'ffprobe',
+      ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=pix_fmt', '-of', 'csv=p=0', file],
+      { timeout: 20000 },
+      (err, stdout) => {
+        if (err) return resolve(false);
+        const fmt = String(stdout).trim().toLowerCase();
+        resolve(
+          /(^|,)(rgba|bgra|argb|abgr|rgba64|gbrap|pal8|ya[0-9]|yuva)/.test(fmt) ||
+            fmt.endsWith('a'),
+        );
+      },
+    );
+  });
+}
+
+// Niveles de mejora: cada uno escala más y afina con más fuerza.
+const HD_LEVELS = {
+  1: { max: 2048, factor: 2, denoise: '', unsharp: 'unsharp=5:5:0.9:3:3:0.4', eq: 'eq=contrast=1.04:saturation=1.06' },
+  2: { max: 3200, factor: 2, denoise: 'hqdn3d=1.5:1.5:3:3', unsharp: 'unsharp=5:5:1.1:5:5:0.5', eq: 'eq=contrast=1.06:saturation=1.10' },
+  3: { max: 4096, factor: 3, denoise: 'hqdn3d=2:2:4:4', unsharp: 'unsharp=7:7:1.3:5:5:0.6', eq: 'eq=contrast=1.08:saturation=1.12' },
+  4: { max: 4608, factor: 4, denoise: 'hqdn3d=3:3:6:6', unsharp: 'unsharp=9:9:1.5:7:7:0.8', eq: 'eq=contrast=1.10:saturation=1.14' },
+};
+
+function hdCommand(level) {
+  const cfg = HD_LEVELS[level];
+  const names = { 1: 'hd', 2: 'hd2', 3: 'hd3', 4: 'hd4' };
+  const labels = { 1: 'HD', 2: 'HD 2 · x2+', 3: 'HD 3 · x3', 4: 'HD 4 · x4 ULTRA' };
+  return {
+    name: names[level],
+    aliases:
+      level === 1
+        ? ['upscale', 'remini', 'enhance', 'mejorar', 'calidad']
+        : level === 2
+          ? ['hdplus', 'hdmas']
+          : level === 3
+            ? ['hdpro', 'hd3x']
+            : ['hdultra', 'hd4x'],
+    category: 'media',
+    desc:
+      level === 1
+        ? 'Mejora y agranda una imagen (hasta 2x) sin perder la transparencia.'
+        : `Mejora la imagen con más fuerza (nivel ${level}, hasta ${cfg.factor}x).`,
+    usage: `${names[level]} (responde a una imagen/sticker o pasa un enlace)`,
+    async execute(ctx) {
+      const image = await resolveImageBuffer(ctx);
+      if (!image) return;
+      await ctx.reply(`⏳ *Mejorando la imagen (${labels[level]})...*`);
+      const input = tmpFile(image.ext);
+      const output = tmpFile('out');
+      try {
+        fs.writeFileSync(input, image.buffer);
+        const { width, height } = await probeSize(input);
+        const maxSide = Math.max(width, height) || 0;
+        const hasAlpha = await probeAlpha(input);
+
+        // Escala objetivo: nunca más allá del máximo del nivel.
+        let scaleFactor = cfg.factor;
+        if (maxSide) {
+          const wanted = Math.min(cfg.max, maxSide * cfg.factor);
+          scaleFactor = Math.max(1, wanted / maxSide);
+        }
+        const even = (n) => Math.max(2, Math.round(n / 2) * 2);
+        const scale = maxSide
+          ? `scale=${even(width * scaleFactor)}:${even(height * scaleFactor)}:flags=lanczos`
+          : `scale=iw*${cfg.factor}:ih*${cfg.factor}:flags=lanczos`;
+
+        const chain = [cfg.denoise, scale, cfg.unsharp, cfg.eq].filter(Boolean).join(',');
+        const outFile = hasAlpha ? `${output}.png` : `${output}.jpg`;
+        const args = ['-i', input, '-frames:v', '1', '-vf', chain];
+        if (hasAlpha) args.push('-pix_fmt', 'rgba', '-compression_level', '6', outFile);
+        else args.push('-q:v', '2', outFile);
+
+        await runFfmpeg(args);
+        const out = fs.readFileSync(outFile);
+        const final = await probeSize(outFile);
+        const size = final.width && final.height ? `${final.width}×${final.height}` : 'alta calidad';
+        await ctx.send({
+          image: out,
+          ...(hasAlpha ? { mimetype: 'image/png' } : {}),
+          caption:
+            `╭─「 ✨ IMAGEN EN ${labels[level]} 」\n` +
+            `│ 📐 ${size}\n` +
+            `│ ${hasAlpha ? '🪄 Transparencia conservada\n' : ''}` +
+            `╰─ ⚡ _Calidad mejorada_`,
+        });
+        fs.rmSync(outFile, { force: true });
+      } catch (err) {
+        console.error('[HD]', err?.message || err);
+        await ctx.reply(`❌ No pude mejorar la imagen: ${err?.message || err}`);
+      } finally {
+        fs.rmSync(input, { force: true });
+        fs.rmSync(output, { force: true });
+      }
+    },
+  };
+}
+
 const media = [
   {
     name: 'flip',
@@ -242,42 +344,10 @@ const media = [
       });
     },
   },
-  {
-    name: 'hd',
-    aliases: ['upscale', 'remini', 'enhance', 'mejorar', 'calidad', 'hd2'],
-    category: 'media',
-    desc: 'Mejora y agranda una imagen (hasta 2x) con alta calidad.',
-    usage: 'hd (responde a una imagen/sticker o pasa un enlace)',
-    async execute(ctx) {
-      const image = await resolveImageBuffer(ctx);
-      if (!image) return;
-      await ctx.reply('⏳ *Mejorando la imagen...*');
-      const input = tmpFile(image.ext);
-      const output = tmpFile('jpg');
-      try {
-        fs.writeFileSync(input, image.buffer);
-        const { width, height } = await probeSize(input);
-        const maxSide = Math.max(width, height) || 0;
-        // 2x si la imagen cabe en 4096 px; si ya es enorme, solo se realza.
-        const factor = maxSide && maxSide < 2048 ? 2 : 1;
-        const scale =
-          width && height
-            ? `scale=${Math.round((width * factor) / 2) * 2}:${Math.round((height * factor) / 2) * 2}:flags=lanczos`
-            : 'scale=iw*2:ih*2:flags=lanczos';
-        const filter = `${scale},unsharp=5:5:0.9:3:3:0.4,eq=contrast=1.04:saturation=1.06`;
-        await runFfmpeg(['-i', input, '-frames:v', '1', '-vf', filter, '-q:v', '2', output]);
-        const out = fs.readFileSync(output);
-        const size = width && height ? `${width * factor}×${height * factor}` : 'alta calidad';
-        await ctx.send({
-          image: out,
-          caption: `╭─「 ✨ IMAGEN EN HD 」\n│ 📐 ${size}\n╰─ ⚡ _Calidad mejorada_`,
-        });
-      } finally {
-        fs.rmSync(input, { force: true });
-        fs.rmSync(output, { force: true });
-      }
-    },
-  },
+  hdCommand(1),
+  hdCommand(2),
+  hdCommand(3),
+  hdCommand(4),
   {
     name: 'qrread',
     aliases: ['leerqr', 'scanqr', 'qrscan'],

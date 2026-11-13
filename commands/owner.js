@@ -729,6 +729,42 @@ export default [
     },
   },
   {
+    name: 'navidad',
+    aliases: ['christmas', 'navideno', 'xmas', 'modonavidad'],
+    category: 'owner',
+    desc: 'Activa o desactiva el modo Navidad en TODOS los estilos de menú (rayos ⚡, sin estrellas).',
+    usage: 'navidad on|off|estado',
+    owner: true,
+    subOwner: true,
+    async execute(ctx) {
+      const sub = String(ctx.args[0] || '').toLowerCase();
+      const on = getBotSetting(ctx.subbot, 'christmas') !== false;
+      const estado =
+        `🎄 *MODO NAVIDAD*\n\n` +
+        `▸ Estado: ${on ? '🟢 ACTIVADO' : '🔴 DESACTIVADO'}\n` +
+        `▸ Afecta a: *todos* los estilos de menú\n` +
+        `▸ Adorno: ⚡ rayos (sin estrellas)\n\n` +
+        `💡 Uso: *${ctx.prefix}navidad on* · *${ctx.prefix}navidad off*`;
+
+      if (!sub || sub === 'estado' || sub === 'status') {
+        await ctx.reply(estado);
+        return;
+      }
+      if (!['on', 'off', 'si', 'sí', 'no'].includes(sub)) {
+        await ctx.reply(estado);
+        return;
+      }
+
+      const value = sub === 'on' || sub === 'si' || sub === 'sí';
+      setBotSetting(ctx.subbot, 'christmas', value);
+      await ctx.reply(
+        value
+          ? `🎄 *MODO NAVIDAD ACTIVADO*\n\nTodos los menús (${ctx.prefix}setmenu ...) se verán con la edición navideña de rayos ⚡.\n\n_Desactívalo con_ *${ctx.prefix}navidad off*`
+          : `🎅 *MODO NAVIDAD DESACTIVADO*\n\nEl menú vuelve al estilo elegido con *${ctx.prefix}setmenu*.`,
+      );
+    },
+  },
+  {
     name: 'setprefix',
     aliases: ['prefix', 'prefijo'],
     category: 'owner',
