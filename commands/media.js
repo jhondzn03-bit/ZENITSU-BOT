@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import { ocrImage, qrReadImage, removeBackground } from '../lib/api.js';
+import { recallMedia, rememberMedia } from '../lib/mediacache.js';
 import { stickerToImage } from '../lib/sticker.js';
 import { fetchBuffer, isUrl, tmpFile, truncate } from '../lib/utils.js';
 
@@ -70,9 +71,26 @@ function sniffImage(buffer) {
 // Acepta imagen respondida, imagen enviada con el comando, sticker o enlace.
 // Así .removebg y .hd funcionan "con cualquier cosa".
 async function resolveImageBuffer(ctx) {
+  // 1) ¿Responde a una imagen que el bot procesó antes (.sinfondo, .hd…)?
+  //    Se recupera el PNG ORIGINAL con transparencia, no la copia recomprimida.
+  const quotedId = ctx.m?.quoted?.key?.id;
+  const cached = recallMedia(quotedId);
+  if (cached) {
+    console.log(`[MEDIA] usando PNG original en caché para ${quotedId}`);
+    return { buffer: cached.buffer, ...sniffImage(cached.buffer) };
+  }
+
   const target = ctx.m?.quoted?.hasMedia ? ctx.m.quoted : ctx.m?.hasMedia ? ctx.m : null;
   if (target) {
     if (target.mediaType === 'image') {
+      const buffer = await ctx.downloadMedia(target);
+      return { buffer, ...sniffImage(buffer) };
+    }
+    // Un PNG enviado como documento conserva el alfa intacto.
+    if (
+      target.mediaType === 'document' &&
+      /^image\//i.test(String(target.content?.mimetype || ''))
+    ) {
       const buffer = await ctx.downloadMedia(target);
       return { buffer, ...sniffImage(buffer) };
     }
@@ -208,7 +226,7 @@ function hdCommand(level) {
         const out = fs.readFileSync(outFile);
         const final = await probeSize(outFile);
         const size = final.width && final.height ? `${final.width}×${final.height}` : 'alta calidad';
-        await ctx.send({
+        const sent = await ctx.send({
           image: out,
           ...(hasAlpha ? { mimetype: 'image/png' } : {}),
           caption:
@@ -217,6 +235,8 @@ function hdCommand(level) {
             `│ ${hasAlpha ? '🪄 Transparencia conservada\n' : ''}` +
             `╰─ ⚡ _Calidad mejorada_`,
         });
+        // Encadena: .hd → .hd2 → .hd3 → .hd4 sin perder el alfa.
+        if (hasAlpha && sent?.key?.id) rememberMedia(sent.key.id, out, 'image/png');
         fs.rmSync(outFile, { force: true });
       } catch (err) {
         console.error('[HD]', err?.message || err);
@@ -337,11 +357,18 @@ const media = [
       const png = await capPng(
         await removeBackground(image.buffer, image.mime, `zenitsu.${image.ext}`),
       );
-      await ctx.send({
+      const sent = await ctx.send({
         image: png,
         mimetype: 'image/png',
-        caption: '╭─「 🪄 FONDO ELIMINADO 」\n│ 📦 PNG con transparencia\n╰─ ⚡ _ZENITSU BOT_',
+        caption:
+          '╭─「 🪄 FONDO ELIMINADO 」\n' +
+          '│ 📦 PNG con transparencia\n' +
+          `│ ⚡ Responde con *${ctx.prefix}hd* (o hd2/hd3/hd4) y no perderá el fondo\n` +
+          '╰─ ⚡ _ZENITSU BOT_',
       });
+      // Guarda el PNG ORIGINAL: WhatsApp recomprime la foto y le pone fondo.
+      // Al responder con .hd se recupera este archivo, no la copia aplanada.
+      if (sent?.key?.id) rememberMedia(sent.key.id, png, 'image/png');
     },
   },
   hdCommand(1),
