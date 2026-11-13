@@ -1,7 +1,12 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import { ocrImage, qrReadImage, removeBackground } from '../lib/api.js';
-import { recallMedia, rememberMedia } from '../lib/mediacache.js';
+import {
+  recallLastTransparent,
+  recallMedia,
+  rememberLastTransparent,
+  rememberMedia,
+} from '../lib/mediacache.js';
 import { stickerToImage } from '../lib/sticker.js';
 import { fetchBuffer, isUrl, tmpFile, truncate } from '../lib/utils.js';
 
@@ -68,6 +73,13 @@ function sniffImage(buffer) {
   return { mime: 'image/jpeg', ext: 'jpg' };
 }
 
+// Clave del chat + usuario: respaldo del último PNG transparente.
+function chatMediaKey(ctx) {
+  const chat = ctx.chat || ctx.m?.chat || '';
+  const user = ctx.senderNumber || ctx.m?.senderNumber || ctx.sender || '';
+  return `${chat}|${user}`;
+}
+
 // Acepta imagen respondida, imagen enviada con el comando, sticker o enlace.
 // Así .removebg y .hd funcionan "con cualquier cosa".
 async function resolveImageBuffer(ctx) {
@@ -77,14 +89,39 @@ async function resolveImageBuffer(ctx) {
   const cached = recallMedia(quotedId);
   if (cached) {
     console.log(`[MEDIA] usando PNG original en caché para ${quotedId}`);
-    return { buffer: cached.buffer, ...sniffImage(cached.buffer) };
+    return { buffer: cached.buffer, ...sniffImage(cached.buffer), recovered: true };
   }
 
   const target = ctx.m?.quoted?.hasMedia ? ctx.m.quoted : ctx.m?.hasMedia ? ctx.m : null;
   if (target) {
     if (target.mediaType === 'image') {
       const buffer = await ctx.downloadMedia(target);
-      return { buffer, ...sniffImage(buffer) };
+      const sniffed = sniffImage(buffer);
+      // WhatsApp a veces entrega la foto ya aplanada (JPEG). Si hay un PNG
+      // transparente reciente del mismo chat y coincide el tamaño, se usa ese.
+      if (sniffed.ext !== 'png' && sniffed.ext !== 'webp') {
+        const fallback = recallLastTransparent(chatMediaKey(ctx));
+        if (fallback) {
+          const a = tmpFile('img');
+          const b = tmpFile('png');
+          try {
+            fs.writeFileSync(a, buffer);
+            fs.writeFileSync(b, fallback.buffer);
+            const s1 = await probeSize(a);
+            const s2 = await probeSize(b);
+            const near = (x, y) =>
+              x && y && Math.abs(y - x) <= Math.max(4, Math.round(x * 0.02));
+            if (near(s1.width, s2.width) && near(s1.height, s2.height)) {
+              console.log('[MEDIA] respaldo: último PNG transparente del chat');
+              return { buffer: fallback.buffer, ...sniffImage(fallback.buffer), recovered: true };
+            }
+          } finally {
+            fs.rmSync(a, { force: true });
+            fs.rmSync(b, { force: true });
+          }
+        }
+      }
+      return { buffer, ...sniffed };
     }
     // Un PNG enviado como documento conserva el alfa intacto.
     if (
@@ -233,14 +270,22 @@ function hdCommand(level) {
             `╭─「 ✨ IMAGEN EN ${labels[level]} 」\n` +
             `│ 📐 ${size}\n` +
             `│ ${hasAlpha ? '🪄 Transparencia conservada\n' : ''}` +
+            `${hasAlpha && image.recovered ? '│ 🧠 PNG original recuperado\n' : ''}` +
             `╰─ ⚡ _Calidad mejorada_`,
         });
         // Encadena: .hd → .hd2 → .hd3 → .hd4 sin perder el alfa.
-        if (hasAlpha && sent?.key?.id) rememberMedia(sent.key.id, out, 'image/png');
+        if (hasAlpha) {
+          if (sent?.key?.id) rememberMedia(sent.key.id, out, 'image/png');
+          rememberLastTransparent(chatMediaKey(ctx), out, 'image/png');
+        }
         fs.rmSync(outFile, { force: true });
       } catch (err) {
         console.error('[HD]', err?.message || err);
-        await ctx.reply(`❌ No pude mejorar la imagen: ${err?.message || err}`);
+        const msg =
+          err?.code === 'ENOENT'
+            ? 'falta *ffmpeg* en el servidor (instálalo con: pkg install ffmpeg)'
+            : err?.message || String(err);
+        await ctx.reply(`❌ No pude mejorar la imagen: ${msg}`);
       } finally {
         fs.rmSync(input, { force: true });
         fs.rmSync(output, { force: true });
@@ -354,9 +399,15 @@ const media = [
       const image = await resolveImageBuffer(ctx);
       if (!image) return;
       await ctx.reply('⏳ *Quitando el fondo con IA...* (puede tardar unos segundos)');
-      const png = await capPng(
-        await removeBackground(image.buffer, image.mime, `zenitsu.${image.ext}`),
-      );
+      let png;
+      try {
+        png = await capPng(
+          await removeBackground(image.buffer, image.mime, `zenitsu.${image.ext}`),
+        );
+      } catch (err) {
+        await ctx.reply(`❌ No pude quitar el fondo: ${err?.message || err}`);
+        return;
+      }
       const sent = await ctx.send({
         image: png,
         mimetype: 'image/png',
@@ -369,6 +420,7 @@ const media = [
       // Guarda el PNG ORIGINAL: WhatsApp recomprime la foto y le pone fondo.
       // Al responder con .hd se recupera este archivo, no la copia aplanada.
       if (sent?.key?.id) rememberMedia(sent.key.id, png, 'image/png');
+      rememberLastTransparent(chatMediaKey(ctx), png, 'image/png');
     },
   },
   hdCommand(1),

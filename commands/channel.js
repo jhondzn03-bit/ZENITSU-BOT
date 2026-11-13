@@ -37,7 +37,8 @@ async function sendStickersToChannels(ctx, jids, count) {
       `⏳ *PREPARANDO ${count} STICKERS...*\n\n` +
         `📢 Canales destino: *${targets.length}*\n` +
         targets.map((j) => `▸ ${label(j)}`).join('\n') +
-        `\n\n_Buscando imágenes y convirtiéndolas._`,
+        `\n\n_El bot debe ser administrador en cada canal._` +
+        `\n_Buscando imágenes y convirtiéndolas._`,
     ),
   );
 
@@ -400,8 +401,8 @@ export default [
     name: 'canalsticker',
     aliases: ['stickercanal', 'canalstickers', 'subirstickers', 'stickersalcanal'],
     category: 'owner',
-    desc: 'Manda stickers aleatorios DE VERDAD a los canales del bot (o a un grupo por su link).',
-    usage: 'canalsticker [cantidad] [canal|canales|<ID>|<enlace de canal>|<link de grupo>]',
+    desc: 'Manda stickers aleatorios DE VERDAD a los canales del bot (por defecto a los dos).',
+    usage: 'canalsticker [cantidad] [canal|<ID>|<enlace de canal>|<link de grupo>|grupo]',
     owner: true,
     async execute(ctx) {
       const args = (ctx.args || []).map((a) => String(a).trim()).filter(Boolean);
@@ -413,6 +414,9 @@ export default [
       const count = Math.min(50, Math.max(1, Number.isFinite(rawCount) ? rawCount : 20));
       const forceChannels = args.some((a) =>
         /^(canal|canales|channel|channels|todos|todo|ambos|both)$/i.test(a),
+      );
+      const forceGroup = args.some((a) =>
+        /^(grupo|aqui|aquí|este|estegrupo|este-grupo)$/i.test(a),
       );
 
       console.log(
@@ -427,9 +431,9 @@ export default [
         return;
       }
 
-      // Si se usa DENTRO de un grupo, el destino natural es ESE grupo
-      // (salvo que se pida explícitamente un canal con "canal"/ID/enlace).
-      if (ctx.isGroup && ctx.chat && !forceChannels && !channelLink && !channelId) {
+      // Por defecto SIEMPRE van a los canales. Para el grupo actual hay que
+      // pedirlo explícitamente con "grupo" (o pasar el enlace del grupo).
+      if (forceGroup && ctx.isGroup && !channelLink && !channelId) {
         const meta = await getGroupMetadata(ctx.sock, ctx.chat).catch(() => null);
         await deliverStickersToGroup(ctx, ctx.chat, meta?.subject || 'este grupo', count);
         return;
