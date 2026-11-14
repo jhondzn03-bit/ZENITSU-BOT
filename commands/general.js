@@ -87,6 +87,7 @@ async function sendMenu(ctx) {
     totalCommands: available.length,
     menuLink: settings.menuLink || '',
     style: settings.menuStyle || DEFAULT_MENU_STYLE,
+    menuEmoji: settings.menuEmoji || '⚡',
     christmas: settings.menuStyle === 'navideno',
     version: config.version,
     ownerName: config.ownerName,

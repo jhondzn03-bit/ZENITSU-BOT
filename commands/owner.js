@@ -740,6 +740,56 @@ export default [
     },
   },
   {
+    name: 'setemoji',
+    aliases: ['menuemoji', 'emoji', 'emojimenu'],
+    category: 'owner',
+    desc: 'Cambia el emoji que acompaña a cada comando del menú (el rayito).',
+    usage: 'setemoji <emoji>',
+    owner: true,
+    subOwner: true,
+    async execute(ctx) {
+      const current = getBotSetting(ctx.subbot, 'menuEmoji') || '⚡';
+      const help =
+        `🎨 *EMOJI DEL MENÚ*\n\n` +
+        `▸ Emoji actual: *${current}*\n\n` +
+        `💡 Uso: *${ctx.prefix}setemoji 🔥*\n` +
+        `💡 Más ejemplos: 🌙 · 💀 · 🐉 · 💎 · 🌸 · 👑\n` +
+        `💡 Volver al rayito: *${ctx.prefix}setemoji reset*`;
+
+      const raw = String(ctx.args[0] || '').trim();
+      if (!raw || raw === 'lista' || raw === 'list' || raw === 'ayuda') {
+        await ctx.reply(help);
+        return;
+      }
+
+      if (raw === 'reset' || raw === 'default' || raw === 'defecto') {
+        setBotSetting(ctx.subbot, 'menuEmoji', '⚡');
+        await ctx.reply(`✅ Emoji del menú restablecido a *⚡*.\n\nEscribe *${ctx.prefix}menu* para verlo.`);
+        return;
+      }
+
+      // Solo se aceptan uno o dos emojis/símbolos: nada de letras, números
+      // ni espacios, para no romper el formato del menú.
+      const chars = [...raw];
+      if (chars.length > 8 || /[\s\p{L}\p{N}]/u.test(raw)) {
+        await ctx.reply(
+          `❌ *${raw}* no sirve como emoji del menú.\n\n` +
+            `Usa solo emojis o símbolos, por ejemplo: 🔥 🌙 💀 🐉\n\n` +
+            help,
+        );
+        return;
+      }
+
+      setBotSetting(ctx.subbot, 'menuEmoji', raw);
+      await ctx.reply(
+        `✅ Emoji del menú cambiado a *${raw}*.\n\n` +
+          `Así se verá cada comando:\n` +
+          `│ ${raw} ${ctx.prefix}menu · ${ctx.prefix}help\n\n` +
+          `Escribe *${ctx.prefix}menu* para verlo completo.`,
+      );
+    },
+  },
+  {
     name: 'navidad',
     aliases: ['christmas', 'navideno', 'xmas', 'modonavidad'],
     category: 'owner',
