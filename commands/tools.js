@@ -559,7 +559,7 @@ export default [
   },
   {
     name: 'password',
-    aliases: ['pass', 'generar'],
+    aliases: ['pass'],
     category: 'tools',
     desc: 'Genera una contraseña segura.',
     usage: 'password [longitud]',

@@ -1,3 +1,4 @@
+import { randomInt as cryptoInt } from 'node:crypto';
 import { config } from '../config.js';
 import { db, getUser, save } from '../lib/db.js';
 import {
@@ -80,6 +81,79 @@ function addCoins(u, amount) {
 
 function userLabel(jid) {
   return `+${jidToNumber(jid)}`;
+}
+
+/* ───────────────────────── 🎟️ Tokens ZENITSU ─────────────────────────────
+ * El owner crea un token con una cantidad de monedas y un tiempo límite.
+ * Cualquier usuario lo canjea UNA sola vez. Se guardan en la DB (db().tokens)
+ * para que no se pierdan si el bot se reinicia.
+ */
+const TOKEN_PREFIX = 'ZENITSU';
+const TOKEN_TTL = 2 * 60 * 1000; // 2 minutos por defecto
+const TOKEN_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // sin O/0 ni I/1
+
+function tokenStore() {
+  const store = db();
+  if (!store.tokens || typeof store.tokens !== 'object') store.tokens = {};
+  return store.tokens;
+}
+
+// Borra tokens viejos: los usados duran 24 h (para avisar "ya fue usado") y
+// los expirados sin usar se limpian 1 h después.
+function pruneTokens(now = Date.now()) {
+  const tokens = tokenStore();
+  for (const [code, t] of Object.entries(tokens)) {
+    const dead = t.used
+      ? now - (t.usedAt || 0) > 24 * 60 * 60 * 1000
+      : now - (t.expiresAt || 0) > 60 * 60 * 1000;
+    if (dead) delete tokens[code];
+  }
+}
+
+function nuevoTokenCode() {
+  const tokens = tokenStore();
+  for (let i = 0; i < 50; i++) {
+    let body = '';
+    for (let j = 0; j < 6; j++) body += TOKEN_CHARS[cryptoInt(TOKEN_CHARS.length)];
+    const code = `${TOKEN_PREFIX}-${body}`;
+    if (!tokens[code]) return code;
+  }
+  return `${TOKEN_PREFIX}-${Date.now().toString(36).toUpperCase()}`;
+}
+
+// "30s" · "5m" · "2h" · "2" (minutos). Devuelve ms o null si no es válido.
+function parseTokenTime(raw) {
+  if (!raw) return TOKEN_TTL;
+  const m = /^(\d+)(s|seg|segs|segundos?|m|min|mins|minutos?|h|hr|horas?)?$/i.exec(String(raw).trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const unit = String(m[2] || 'm').toLowerCase();
+  const ms = unit.startsWith('s') ? n * 1000 : unit.startsWith('h') ? n * 3600000 : n * 60000;
+  if (ms < 5000 || ms > 24 * 60 * 60 * 1000) return null;
+  return ms;
+}
+
+// Acepta "ZENITSU-ABC123", "zenitsu abc123" o solo "ABC123".
+function normalizeToken(raw) {
+  const s = String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!s) return '';
+  const body = s.startsWith(TOKEN_PREFIX) ? s.slice(TOKEN_PREFIX.length) : s;
+  return body ? `${TOKEN_PREFIX}-${body}` : '';
+}
+
+function tokenClock(ts) {
+  try {
+    return new Date(ts).toLocaleTimeString('es-SV', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+      timeZone: config.timezone || undefined,
+    });
+  } catch {
+    return '';
+  }
 }
 
 export default [
@@ -246,6 +320,149 @@ export default [
         text: `💸 *TRANSFERENCIA*\n\n▸ De: @${ctx.senderNumber}\n▸ Para: @${jidToNumber(targetJid)}\n▸ Cantidad: *${formatNumber(amount)} monedas*`,
         mentions: [ctx.sender, targetJid],
       });
+    },
+  },
+  {
+    name: 'generar',
+    aliases: ['gentoken', 'creartoken', 'generartoken', 'nuevotoken'],
+    category: 'owner',
+    desc: 'Crea un token ZENITSU con monedas y tiempo límite (solo owner).',
+    usage: 'generar <monedas> [tiempo]',
+    owner: true,
+    async execute(ctx) {
+      pruneTokens();
+      // Se acepta ".generar token 9999" igual que ".generar 9999".
+      const args = ctx.args.map((a) => String(a)).filter((a) => !/^tokens?$/i.test(a));
+      const idx = args.findIndex((a) => /^\d+$/.test(a));
+      const amount = idx >= 0 ? Number(args[idx]) : NaN;
+      const timeRaw = idx >= 0 ? args.slice(idx + 1).join('').trim() : '';
+
+      // Sin cantidad: lista de tokens activos + ayuda.
+      if (!Number.isFinite(amount) || amount <= 0) {
+        const now = Date.now();
+        const active = Object.entries(tokenStore())
+          .filter(([, t]) => !t.used && (t.expiresAt || 0) > now)
+          .sort((a, b) => (a[1].expiresAt || 0) - (b[1].expiresAt || 0));
+        const list = active.length
+          ? active
+              .slice(0, 15)
+              .map(
+                ([code, t]) =>
+                  `▸ *${code}* · ${formatNumber(t.coins)} monedas · quedan ${formatDuration((t.expiresAt || 0) - now)}`,
+              )
+              .join('\n')
+          : '▸ No hay tokens activos.';
+        await ctx.reply(
+          `🎟️ *TOKENS ZENITSU*\n\n` +
+            `▸ Activos: *${active.length}*\n\n${list}\n\n` +
+            `💡 Crear: *${ctx.prefix}generar 9999*\n` +
+            `💡 Con tiempo: *${ctx.prefix}generar 9999 5m* (por defecto 2 minutos)\n` +
+            `💡 Canjear: *${ctx.prefix}canjear ZENITSU-XXXXXX*`,
+        );
+        return;
+      }
+
+      if (amount > 1000000000) {
+        await ctx.reply('❌ La cantidad máxima por token es *1,000,000,000* monedas.');
+        return;
+      }
+
+      const ttl = parseTokenTime(timeRaw);
+      if (ttl === null) {
+        await ctx.reply(
+          `❌ Tiempo inválido: *${timeRaw}*\n\n` +
+            `Usa segundos, minutos u horas: *30s*, *5m*, *2h*.\n` +
+            `Mínimo 5 segundos, máximo 24 horas.`,
+        );
+        return;
+      }
+
+      const coins = Math.floor(amount);
+      const code = nuevoTokenCode();
+      const now = Date.now();
+      const expiresAt = now + ttl;
+      tokenStore()[code] = {
+        coins,
+        createdAt: now,
+        expiresAt,
+        createdBy: ctx.senderNumber || '',
+        used: false,
+        usedBy: null,
+        usedAt: 0,
+      };
+      save();
+
+      const clock = tokenClock(expiresAt);
+      await ctx.reply(
+        `🎟️ *TOKEN ZENITSU CREADO*\n\n` +
+          `▸ Código: *${code}*\n` +
+          `▸ Monedas: *${formatNumber(coins)}*\n` +
+          `▸ Expira en: *${formatDuration(ttl)}*${clock ? ` (${clock})` : ''}\n\n` +
+          `💡 Que lo canjeen con:\n*${ctx.prefix}canjear ${code}*\n\n` +
+          `_⏳ Un solo uso. Después de ${formatDuration(ttl)} ya no sirve._`,
+      );
+    },
+  },
+  {
+    name: 'canjear',
+    aliases: ['redeem', 'usartoken', 'canjearcodigo', 'redimirtoken'],
+    category: 'economy',
+    desc: 'Canjea un token ZENITSU y recibe monedas.',
+    usage: 'canjear ZENITSU-XXXXXX',
+    async execute(ctx) {
+      const code = normalizeToken(ctx.args.join(''));
+      if (!code) {
+        await ctx.reply(
+          `💡 Uso: *${ctx.prefix}canjear ZENITSU-XXXXXX*\n\n` +
+            `_Pídele un token al owner del bot._`,
+        );
+        return;
+      }
+
+      pruneTokens();
+      const tokens = tokenStore();
+      const t = tokens[code];
+      if (!t) {
+        await ctx.reply(
+          `❌ Token *${code}* inválido o expirado.\n\n` +
+            `💡 Los tokens duran pocos minutos y se usan una sola vez.`,
+        );
+        return;
+      }
+      if (t.used) {
+        await ctx.reply(
+          `🎟️ Ese token ya fue usado${t.usedBy ? ` por *+${t.usedBy}*` : ''}.\n\n` +
+            `💡 Pídele otro al owner.`,
+        );
+        return;
+      }
+
+      const now = Date.now();
+      if ((t.expiresAt || 0) <= now) {
+        delete tokens[code];
+        save();
+        await ctx.reply(
+          `⌛ El token *${code}* expiró.\n\n` +
+            `💡 Pídele uno nuevo al owner.`,
+        );
+        return;
+      }
+
+      const u = getUser(ctx.sender);
+      const coins = Math.max(0, Math.floor(t.coins || 0));
+      t.used = true;
+      t.usedBy = ctx.senderNumber || '';
+      t.usedAt = now;
+      u.coins = (u.coins || 0) + coins;
+      save();
+
+      await ctx.reply(
+        `🎟️ *TOKEN CANJEADO*\n\n` +
+          `▸ Código: *${code}*\n` +
+          `▸ Recibiste: *+${formatNumber(coins)} monedas*\n` +
+          `▸ Tu balance: *${formatNumber(u.coins)}*\n\n` +
+          `⚡ ¡Gracias por usar ZENITSU BOT!`,
+      );
     },
   },
   {
