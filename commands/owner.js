@@ -743,19 +743,21 @@ export default [
     name: 'navidad',
     aliases: ['christmas', 'navideno', 'xmas', 'modonavidad'],
     category: 'owner',
-    desc: 'Activa o desactiva el modo Navidad en TODOS los estilos de menú (rayos ⚡, sin estrellas).',
+    desc: 'Activa o desactiva el menú navideño (cambia solo al estilo navideno).',
     usage: 'navidad on|off|estado',
     owner: true,
     subOwner: true,
     async execute(ctx) {
       const sub = String(ctx.args[0] || '').toLowerCase();
-      const on = getBotSetting(ctx.subbot, 'christmas') !== false;
+      const current = getBotSetting(ctx.subbot, 'menuStyle') || DEFAULT_MENU_STYLE;
+      const on = current === 'navideno';
       const estado =
-        `🎄 *MODO NAVIDAD*\n\n` +
+        `🎄 *MENÚ NAVIDEÑO*\n\n` +
         `▸ Estado: ${on ? '🟢 ACTIVADO' : '🔴 DESACTIVADO'}\n` +
-        `▸ Afecta a: *todos* los estilos de menú\n` +
+        `▸ Estilo actual: *${current}*\n` +
         `▸ Adorno: ⚡ rayos (sin estrellas)\n\n` +
-        `💡 Uso: *${ctx.prefix}navidad on* · *${ctx.prefix}navidad off*`;
+        `💡 Uso: *${ctx.prefix}navidad on* · *${ctx.prefix}navidad off*\n` +
+        `💡 Otros estilos: *${ctx.prefix}setmenu*`;
 
       if (!sub || sub === 'estado' || sub === 'status') {
         await ctx.reply(estado);
@@ -767,11 +769,19 @@ export default [
       }
 
       const value = sub === 'on' || sub === 'si' || sub === 'sí';
-      setBotSetting(ctx.subbot, 'christmas', value);
+      // Solo cambia el ESTILO del menú. Antes activaba un modo global que
+      // convertía todos los estilos en navideños y no dejaba elegir otro.
+      if (value) {
+        setBotSetting(ctx.subbot, 'menuStyle', 'navideno');
+        setBotSetting(ctx.subbot, 'christmas', true);
+      } else {
+        setBotSetting(ctx.subbot, 'menuStyle', DEFAULT_MENU_STYLE);
+        setBotSetting(ctx.subbot, 'christmas', false);
+      }
       await ctx.reply(
         value
-          ? `🎄 *MODO NAVIDAD ACTIVADO*\n\nTodos los menús (${ctx.prefix}setmenu ...) se verán con la edición navideña de rayos ⚡.\n\n_Desactívalo con_ *${ctx.prefix}navidad off*`
-          : `🎅 *MODO NAVIDAD DESACTIVADO*\n\nEl menú vuelve al estilo elegido con *${ctx.prefix}setmenu*.`,
+          ? `🎄 *MENÚ NAVIDEÑO ACTIVADO*\n\nEscribe *${ctx.prefix}menu* para verlo.\n_Para otro estilo:_ *${ctx.prefix}setmenu <estilo>*`
+          : `🎅 *MENÚ NAVIDEÑO DESACTIVADO*\n\nVolvió al estilo *${DEFAULT_MENU_STYLE}*. Elige otro con *${ctx.prefix}setmenu*.`,
       );
     },
   },
