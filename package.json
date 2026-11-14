@@ -1,6 +1,6 @@
 {
   "name": "zenitsu-bot",
-  "version": "2.6.3",
+  "version": "2.6.4",
   "description": "ZENITSU BOT - Bot de WhatsApp con Baileys, código de vinculación de 8 dígitos y comandos ilimitados.",
   "type": "module",
   "main": "index.js",

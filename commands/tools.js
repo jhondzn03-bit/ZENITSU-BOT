@@ -72,16 +72,19 @@ async function sendAudio(ctx, buffer, ptt = false, fileName = 'zenitsu.mp3') {
   let data = buffer;
   let mimetype = 'audio/mpeg';
   let name = fileName;
+  let seconds = 0;
   if (ptt) {
     // Las notas de voz de WhatsApp deben ser OGG/Opus; un MP3 con ptt:true
     // se oye como "Este audio no está disponible...".
-    data = await audioToVoiceNote(buffer, 'mp3');
+    const voice = await audioToVoiceNote(buffer, 'mp3');
+    data = voice.buffer;
+    seconds = voice.seconds;
     mimetype = 'audio/ogg; codecs=opus';
     name = 'zenitsu-voz.ogg';
   }
   const sent = await ctx.sock.sendMessage(
     ctx.chat,
-    { audio: data, mimetype, fileName: name, ptt },
+    { audio: data, mimetype, fileName: name, ptt, ...(seconds ? { seconds } : {}) },
     { quoted: ctx.msg },
   );
   trackSent(sent);

@@ -101,8 +101,24 @@ export default [
         const mp3 = await ttsAudio(clean, 'es');
         // WhatsApp solo reproduce notas de voz en OGG/Opus. El MP3 con
         // ptt:true provoca "Este audio no está disponible...".
-        const ogg = await audioToVoiceNote(mp3, 'mp3');
-        await ctx.send({ audio: ogg, mimetype: 'audio/ogg; codecs=opus', ptt: true });
+        const { buffer: ogg, seconds } = await audioToVoiceNote(mp3, 'mp3');
+        try {
+          await ctx.send({
+            audio: ogg,
+            mimetype: 'audio/ogg; codecs=opus',
+            ptt: true,
+            seconds,
+          });
+        } catch {
+          // Si el teléfono rechaza la nota de voz, al menos que suene como
+          // audio normal en vez de perder la respuesta.
+          await ctx.send({
+            audio: mp3,
+            mimetype: 'audio/mpeg',
+            ptt: false,
+            fileName: 'zenitsu-voz.mp3',
+          });
+        }
       } catch (err) {
         await ctx.reply(
           `🎙️ *Respuesta de ZENITSU AI*\n\n${answer}\n\n_⚠️ No pude generar el audio: ${err.message}_`,
