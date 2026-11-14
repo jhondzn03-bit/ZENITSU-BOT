@@ -26,6 +26,26 @@ import { effectiveSettings, subbotForSock } from '../lib/settings.js';
 const messageCache = new Map();
 const spamMap = new Map();
 
+// ── Detección de enlaces para .antilink ────────────────────────────────────
+// Antes solo miraba http(s)://, wa.me y chat.whatsapp.com. Ahora también
+// detecta enlaces "pelados" (www., t.me, discord.gg) y dominios sueltos
+// como "minecraft.net/regalo" o "bit.ly/abc". Los correos NO cuentan.
+const LINK_TLDS =
+  'com|net|org|io|me|ly|gg|tv|xyz|info|link|site|online|app|dev|co|pe|mx|ar|es|to|cc|ru|tk|ml|ga|cf|gq|biz|club|store|shop|live|pro|top|icu|vip|win|cloud|page|blog|wiki|shop|lat|click|download|stream|site';
+const LINK_RE = new RegExp(
+  '(?:https?:\\/\\/|www\\.|wa\\.me\\/|chat\\.whatsapp\\.com\\/|t\\.me\\/|telegram\\.me\\/|discord\\.(?:gg|com\\/invite)\\/)' +
+    '|(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.(?:' +
+    LINK_TLDS +
+    ')(?![a-z0-9-]))',
+  'i',
+);
+
+function containsLink(text = '') {
+  // Quita correos electrónicos para no castigar a quien escribe uno.
+  const clean = String(text).replace(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi, ' ');
+  return LINK_RE.test(clean);
+}
+
 /* ─────────── "¿quisiste decir?" — comandos mal escritos ─────────── */
 
 // Distancia de Levenshtein (cuántos caracteres hay que cambiar para que dos
@@ -554,23 +574,24 @@ export async function handleMessage(sock, msg) {
   }
 
   // Anti-enlace.
-  if (
-    m.isGroup &&
-    group?.antiLink &&
-    !ctx.isAdmin &&
-    /(https?:\/\/|wa\.me\/|chat\.whatsapp\.com\/)/i.test(m.body)
-  ) {
+  if (m.isGroup && group?.antiLink && !ctx.isAdmin && containsLink(m.body)) {
     try {
       await ctx.deleteMsg();
     } catch {}
     const u = getUser(m.sender);
     u.warns = (u.warns || 0) + 1;
     save();
+    const limit = group.warnLimit || config.maxWarns || 3;
     await ctx.reply(
-      `🚫 *Enlaces no permitidos*\n\n@${m.senderNumber} has recibido una advertencia (${u.warns}/${group.warnLimit}).`,
+      `🚫 *ANTI-ENLACES ACTIVADO*\n\n` +
+        `@${m.senderNumber}, los enlaces están prohibidos en este grupo.\n` +
+        `▸ Advertencia: *${u.warns}/${limit}*\n` +
+        (u.warns >= limit
+          ? '▸ Llegaste al límite: serás expulsado si soy administrador.'
+          : `▸ Si llegas a ${limit}, serás expulsado.`),
       { mentions: [m.sender] },
     );
-    if (u.warns >= (group.warnLimit || config.maxWarns) && isBotAdmin) {
+    if (u.warns >= limit && isBotAdmin) {
       try {
         await sock.groupParticipantsUpdate(m.chat, [m.sender], 'remove');
       } catch {}

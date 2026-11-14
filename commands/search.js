@@ -20,7 +20,8 @@ import {
   archiveMovieFiles,
   itunesApps,
 } from '../lib/api.js';
-import { truncate, formatNumber, fetchBuffer } from '../lib/utils.js';
+import fs from 'node:fs';
+import { truncate, formatNumber, fetchBuffer, downloadToFile, tmpFile } from '../lib/utils.js';
 
 // ─── Selector para .peliculasgratis (igual que .ytsearch) ──────────────────
 const SEARCH_TTL = 15 * 60 * 1000;
@@ -361,35 +362,96 @@ const search = [
           return;
         }
         await ctx.reply(`⏬ *Preparando "${truncate(pick.title, 40)}"...*`);
-        const { files, title } = await archiveMovieFiles(pick.identifier);
-        // WhatsApp solo reproduce como VIDEO los archivos MP4/M4V. Si la
-        // película solo existe en .ogv/.webm, se dan los enlaces en su lugar.
-        const video = files.find((f) => /\.(mp4|m4v)$/i.test(f.name));
-        if (!video) {
-          const alt = files[0]; // el más liviano
-          const ext = (alt.name.split('.').pop() || 'video').toLowerCase();
+        let movie;
+        try {
+          movie = await archiveMovieFiles(pick.identifier);
+        } catch (err) {
           await ctx.reply(
-            `🎬 *${truncate(title, 50)}* solo tiene formato de archivo (\`.${ext}\`), que WhatsApp no reproduce.\n\n▸ 🎥 Mírala online: ${pick.url}\n▸ ⏬ Descárgala aquí:\n${alt.url}`,
+            `❌ No pude leer esa película: ${err.message}\n\n▸ 🎥 Mírala online: ${pick.url}`,
           );
           return;
         }
-        const mb = video.size / (1024 * 1024);
-        if (mb > 65) {
-          // Demasiado pesado para WhatsApp: mando el enlace directo.
+        const { files, title } = movie;
+
+        // Preferimos MP4/M4V porque WhatsApp los reproduce en el chat. Si la
+        // película solo existe en .ogv/.webm se manda como archivo (no como
+        // video) para que igual se pueda descargar.
+        const mp4 = files.find((f) => /\.(mp4|m4v)$/i.test(f.name));
+        const chosen = mp4 || files[0];
+        if (!chosen) {
+          await ctx.reply(`❌ Esa película no tiene archivos descargables.\n\n▸ 🎥 ${pick.url}`);
+          return;
+        }
+
+        const mb = chosen.size / (1024 * 1024);
+        const VIDEO_LIMIT = 64 * 1024 * 1024; // límite de WhatsApp para video
+        const DOC_LIMIT = 1500 * 1024 * 1024; // límite práctico para documentos
+        const ext = (chosen.name.split('.').pop() || 'mp4').toLowerCase();
+        const playable = Boolean(mp4) && chosen.size <= VIDEO_LIMIT;
+
+        // Demasiado pesado incluso para documento: enlace directo.
+        if (!chosen.size || chosen.size > DOC_LIMIT) {
           await ctx.reply(
-            `🎬 *${truncate(title, 50)}* pesa *${mb.toFixed(1)} MB* (muy pesado para subirlo).\n\n▸ ⏬ Descárgala aquí:\n${video.url}\n▸ 🎥 Ver online: ${pick.url}`,
+            `🎬 *${truncate(title, 50)}*\n\n▸ 📦 ${mb ? mb.toFixed(1) + ' MB' : 'tamaño desconocido'} (supera el límite de WhatsApp)\n▸ ⏬ Descárgala aquí:\n${chosen.url}\n▸ 🎥 Ver online: ${pick.url}`,
           );
           return;
         }
-        await ctx.reply(`📥 *Descargando ${mb.toFixed(1)} MB y subiendo... (paciencia)*`);
-        const buffer = await fetchBuffer(video.url);
-        // Se envía como VIDEO para que se reproduzca directo en el chat:
-        // los documentos no tienen reproductor y pueden verse sospechosos.
-        await ctx.send({
-          video: buffer,
-          mimetype: 'video/mp4',
-          caption: `🎬 *${truncate(title, 50)}*\n\n▸ 📅 ${pick.year || 'Clásico'} · ${formatNumber(pick.downloads)} descargas\n▸ 100% legal: dominio público\n▸ 🔗 ${pick.url}`,
-        });
+
+        const dest = tmpFile(ext || 'mp4');
+        await ctx.reply(
+          playable
+            ? `📥 *Descargando y subiendo VIDEO* · ${mb.toFixed(1)} MB\n⏳ Puede tardar varios minutos, no cierres el chat.`
+            : `📥 *Descargando PELÍCULA COMPLETA* · ${mb.toFixed(1)} MB\n📦 Se enviará como archivo (los videos de más de 64 MB no se reproducen dentro de WhatsApp).\n⏳ Paciencia, puede tardar varios minutos.`,
+        );
+
+        const caption =
+          `🎬 *${truncate(title, 50)}*\n\n` +
+          `▸ 📅 ${pick.year || 'Clásico'} · ${formatNumber(pick.downloads)} descargas\n` +
+          `▸ 📦 ${mb.toFixed(1)} MB · 100% legal (dominio público)\n` +
+          `▸ 🔗 ${pick.url}`;
+
+        try {
+          await downloadToFile(chosen.url, dest, { timeout: 30 * 60 * 1000 });
+          const cleanName = String(title || 'pelicula')
+            .replace(/[^\w.\- ]+/g, '_')
+            .slice(0, 70) || 'pelicula';
+
+          if (playable) {
+            await ctx.send({
+              video: fs.createReadStream(dest),
+              mimetype: 'video/mp4',
+              caption,
+            });
+          } else {
+            await ctx.send({
+              document: fs.createReadStream(dest),
+              mimetype: ext === 'mp4' || ext === 'm4v' ? 'video/mp4' : 'application/octet-stream',
+              fileName: `${cleanName}.${ext}`,
+              caption:
+                caption +
+                '\n▸ 💡 Ábrelo con tu reproductor (VLC, MX Player...)',
+            });
+          }
+        } catch (err) {
+          // Si la descarga local falla, WhatsApp todavía puede intentar bajar
+          // el enlace directo: se manda como documento sin gastar RAM.
+          try {
+            await ctx.send({
+              document: { url: chosen.url },
+              mimetype: ext === 'mp4' || ext === 'm4v' ? 'video/mp4' : 'application/octet-stream',
+              fileName: `${String(title || 'pelicula').replace(/[^\w.\- ]+/g, '_').slice(0, 70)}.${ext}`,
+              caption,
+            });
+          } catch {
+            await ctx.reply(
+              `⚠️ No pude descargar ni subir el archivo (${truncate(err.message, 120)}).\n\n▸ ⏬ Descárgala directo aquí:\n${chosen.url}\n▸ 🎥 Ver online: ${pick.url}`,
+            );
+          }
+        } finally {
+          try {
+            fs.unlinkSync(dest);
+          } catch {}
+        }
         return;
       }
 

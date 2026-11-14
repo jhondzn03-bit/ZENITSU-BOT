@@ -738,7 +738,7 @@ export default [
   },
   groupToggle('welcome', 'welcome', 'Bienvenida', ['bienvenidas']),
   groupToggle('goodbye', 'goodbye', 'Despedida', ['despedidas']),
-  groupToggle('antilink', 'antiLink', 'Anti enlaces', ['antienlaces']),
+  groupToggle('antilink', 'antiLink', 'Anti enlaces', ['antienlaces', 'antienlace', 'antilinks']),
   groupToggle('antispam', 'antiSpam', 'Anti spam', ['antiflood']),
   groupToggle('adminnotice', 'adminNotice', 'Avisos de admins e imagen', ['avisosadmin', 'noticiasadmin']),
 ];
