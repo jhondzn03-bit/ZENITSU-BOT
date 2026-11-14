@@ -37,7 +37,7 @@ import {
   imageSearch,
 } from '../lib/api.js';
 import { sendButtons } from '../lib/buttons.js';
-import { mediaToAudio, mediaToSticker, stickerToImage } from '../lib/sticker.js';
+import { audioToVoiceNote, mediaToAudio, mediaToSticker, stickerToImage } from '../lib/sticker.js';
 import { sendStickerBatch } from '../lib/stickers.js';
 import { collectStickerlyStickers } from '../lib/stickerly.js';
 import { trackSent } from '../lib/state.js';
@@ -69,9 +69,19 @@ function isLang(value) {
 }
 
 async function sendAudio(ctx, buffer, ptt = false, fileName = 'zenitsu.mp3') {
+  let data = buffer;
+  let mimetype = 'audio/mpeg';
+  let name = fileName;
+  if (ptt) {
+    // Las notas de voz de WhatsApp deben ser OGG/Opus; un MP3 con ptt:true
+    // se oye como "Este audio no está disponible...".
+    data = await audioToVoiceNote(buffer, 'mp3');
+    mimetype = 'audio/ogg; codecs=opus';
+    name = 'zenitsu-voz.ogg';
+  }
   const sent = await ctx.sock.sendMessage(
     ctx.chat,
-    { audio: buffer, mimetype: 'audio/mpeg', fileName, ptt },
+    { audio: data, mimetype, fileName: name, ptt },
     { quoted: ctx.msg },
   );
   trackSent(sent);
@@ -247,7 +257,7 @@ export default [
   },
   {
     name: 'tts',
-    aliases: ['decir', 'voz'],
+    aliases: ['decir'],
     category: 'tools',
     desc: 'Convierte texto en una nota de voz.',
     usage: 'tts [idioma] <texto>',

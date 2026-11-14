@@ -453,6 +453,17 @@ export async function handleMessage(sock, msg) {
 
   const group = m.isGroup ? getGroup(m.chat) : null;
 
+  // Anti-enlace: si el grupo lo tiene activo y el mensaje trae un enlace, se
+  // borra AL INSTANTE, antes de consultar metadata o ejecutar cualquier otra
+  // cosa. Aplica a todos (menos a los mensajes del propio bot).
+  let linkStrike = false;
+  if (m.isGroup && group?.antiLink && !m.fromMe && containsLink(m.body)) {
+    linkStrike = true;
+    try {
+      await sock.sendMessage(m.chat, { delete: m.key });
+    } catch {}
+  }
+
   // Si el grupo tiene usuarios silenciados, hay que resolver su número real
   // (puede llegar como LID) y saber si el bot es admin para borrar mensajes.
   const hasMutedUsers = Boolean(
@@ -573,11 +584,9 @@ export async function handleMessage(sock, msg) {
     await ctx.react(pick(['⚡', '🌩️', '🔥', '💛', '👀', '✨', '⚔️']));
   }
 
-  // Anti-enlace.
-  if (m.isGroup && group?.antiLink && !ctx.isAdmin && containsLink(m.body)) {
-    try {
-      await ctx.deleteMsg();
-    } catch {}
+  // Anti-enlace: el mensaje ya se borró arriba; aquí solo se avisa y se
+  // cuentan las advertencias.
+  if (linkStrike) {
     const u = getUser(m.sender);
     u.warns = (u.warns || 0) + 1;
     save();
@@ -586,6 +595,9 @@ export async function handleMessage(sock, msg) {
       `🚫 *ANTI-ENLACES ACTIVADO*\n\n` +
         `@${m.senderNumber}, los enlaces están prohibidos en este grupo.\n` +
         `▸ Advertencia: *${u.warns}/${limit}*\n` +
+        (!isBotAdmin
+          ? '▸ ⚠️ No soy administrador: no pude borrar el mensaje.\n'
+          : '') +
         (u.warns >= limit
           ? '▸ Llegaste al límite: serás expulsado si soy administrador.'
           : `▸ Si llegas a ${limit}, serás expulsado.`),

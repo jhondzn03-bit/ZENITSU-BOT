@@ -1,6 +1,7 @@
 import { db, getChat, save } from '../lib/db.js';
 import { truncate } from '../lib/utils.js';
-import { aiImage, aiText, geminiText } from '../lib/api.js';
+import { aiImage, aiText, geminiText, ttsAudio } from '../lib/api.js';
+import { audioToVoiceNote } from '../lib/sticker.js';
 
 const historyMap = new Map();
 
@@ -63,6 +64,50 @@ export default [
       await ctx.react('🤖');
       const answer = await askAI(ctx, prompt);
       await sendLong(ctx, `🤖 *ZENITSU AI*\n\n${answer}`);
+    },
+  },
+  {
+    name: 'voz',
+    aliases: ['voiceai', 'iavoice', 'vozia'],
+    category: 'ai',
+    desc: 'Le preguntas a la IA y te responde con una nota de voz.',
+    usage: 'voz <pregunta>',
+    async execute(ctx) {
+      let prompt = ctx.text.trim();
+      if (!prompt && ctx.quoted?.text) prompt = ctx.quoted.text;
+      if (!prompt) {
+        await ctx.reply(`💡 Uso: *${ctx.prefix}voz* ¿Qué es la respiración del trueno?`);
+        return;
+      }
+      await ctx.react('🎙️');
+      const answer = await askAI(ctx, prompt, {
+        system:
+          SYSTEM_PROMPT +
+          ' Responde para ser leído EN VOZ ALTA: máximo 500 caracteres, sin markdown, ' +
+          'sin emojis, sin listas y sin enlaces. Usa frases cortas y naturales.',
+      });
+      const clean = String(answer || '')
+        .replace(/```[\s\S]*?```/g, ' ')
+        .replace(/[*_`#>~|]/g, '')
+        .replace(/https?:\/\/\S+/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 600);
+      if (!clean) {
+        await ctx.reply('🤖 La IA no devolvió texto.');
+        return;
+      }
+      try {
+        const mp3 = await ttsAudio(clean, 'es');
+        // WhatsApp solo reproduce notas de voz en OGG/Opus. El MP3 con
+        // ptt:true provoca "Este audio no está disponible...".
+        const ogg = await audioToVoiceNote(mp3, 'mp3');
+        await ctx.send({ audio: ogg, mimetype: 'audio/ogg; codecs=opus', ptt: true });
+      } catch (err) {
+        await ctx.reply(
+          `🎙️ *Respuesta de ZENITSU AI*\n\n${answer}\n\n_⚠️ No pude generar el audio: ${err.message}_`,
+        );
+      }
     },
   },
   {
