@@ -790,6 +790,91 @@ export default [
     },
   },
   {
+    name: 'setreaccion',
+    aliases: ['setreaction', 'reaccion', 'reaction', 'setreact'],
+    category: 'owner',
+    desc: 'Cambia el emoji con el que el bot reacciona al terminar un comando.',
+    usage: 'setreaccion <comando> <emoji>',
+    owner: true,
+    subOwner: true,
+    async execute(ctx) {
+      const current = { ...(getBotSetting(ctx.subbot, 'reactions') || {}) };
+      const list =
+        Object.entries(current)
+          .filter(([, emoji]) => emoji)
+          .map(([cmd, emoji]) => `│ ${ctx.prefix}${cmd} → ${emoji}`)
+          .join('\n');
+      const help =
+        `⚡ *REACCIÓN DE LOS COMANDOS*\n\n` +
+        `▸ Al terminar un comando, el bot reacciona con ✅.\n` +
+        `▸ Puedes cambiar ese emoji comando por comando.\n\n` +
+        `💡 Uso: *${ctx.prefix}setreaccion play 🔥*\n` +
+        `💡 Quitar una reacción: *${ctx.prefix}setreaccion play reset*\n` +
+        `💡 Más ejemplos: 🌙 · 💀 · 🐉 · 💎 · 🌸 · 👑\n` +
+        `▸ También sirve con cualquier alias del comando.` +
+        (list ? `\n\n📌 *PERSONALIZADAS*\n${list}` : '');
+
+      const cmdArg = String(ctx.args[0] || '').trim().replace(/^[./#!]/, '').toLowerCase();
+      const raw = String(ctx.args[1] || '').trim();
+
+      if (!cmdArg || cmdArg === 'lista' || cmdArg === 'list' || cmdArg === 'ayuda') {
+        await ctx.reply(help);
+        return;
+      }
+
+      // Se valida contra el mapa real para no guardar comandos que no existen.
+      let commandMap;
+      try {
+        ({ commandMap } = await import('../commands/index.js'));
+      } catch {
+        commandMap = null;
+      }
+      const cmd = commandMap?.get(cmdArg);
+      if (!cmd) {
+        await ctx.reply(
+          `❌ No existe el comando *${cmdArg}*.\n\n` +
+            `💡 Escribe *${ctx.prefix}menu* para ver todos los comandos.\n\n` +
+            help,
+        );
+        return;
+      }
+
+      if (!raw || raw === 'off' || raw === 'reset' || raw === 'default' || raw === 'defecto') {
+        if (!current[cmd.name]) {
+          await ctx.reply(`ℹ️ *${ctx.prefix}${cmd.name}* ya usa la reacción normal ✅.`);
+          return;
+        }
+        delete current[cmd.name];
+        setBotSetting(ctx.subbot, 'reactions', current);
+        await ctx.reply(
+          `✅ Reacción de *${ctx.prefix}${cmd.name}* restablecida a *✅*.\n\n` +
+            `Escribe *${ctx.prefix}${cmd.name}* para probarla.`,
+        );
+        return;
+      }
+
+      // Solo emojis o símbolos: nada de letras, números ni espacios.
+      const chars = [...raw];
+      if (chars.length > 8 || /[\s\p{L}\p{N}]/u.test(raw)) {
+        await ctx.reply(
+          `❌ *${raw}* no sirve como reacción.\n\n` +
+            `Usa solo emojis o símbolos, por ejemplo: 🔥 🌙 💀 🐉\n\n` +
+            help,
+        );
+        return;
+      }
+
+      current[cmd.name] = raw;
+      setBotSetting(ctx.subbot, 'reactions', current);
+      const alias = cmd.aliases?.[0];
+      await ctx.reply(
+        `✅ Ahora *${ctx.prefix}${cmd.name}* reacciona con *${raw}* al terminar.\n\n` +
+          (alias ? `(También con *${ctx.prefix}${alias}* y sus demás alias.)\n\n` : '') +
+          `Escribe *${ctx.prefix}${cmd.name}* para probarlo.`,
+      );
+    },
+  },
+  {
     name: 'navidad',
     aliases: ['christmas', 'navideno', 'xmas', 'modonavidad'],
     category: 'owner',

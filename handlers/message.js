@@ -729,10 +729,12 @@ export async function handleMessage(sock, msg) {
   }
 
   // Reacción de "trabajando" mientras corre el comando y "listo" al terminar.
+  // El emoji final se puede personalizar con .setreaccion <comando> <emoji>.
   await reactStatus(sock, m, '⏳');
+  const doneReaction = settings.reactions?.[cmd.name] || '✅';
   try {
     await cmd.execute(ctx);
-    await reactStatus(sock, m, '✅');
+    await reactStatus(sock, m, doneReaction);
   } catch (err) {
     await reactStatus(sock, m, '❌');
     console.error(`[CMD:${commandName}]`, err);

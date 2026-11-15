@@ -5,6 +5,7 @@ import {
   formatBytes,
   formatNumber,
   isUrl,
+  sleep,
   truncate,
   withWatermark,
 } from '../lib/utils.js';
@@ -17,12 +18,16 @@ import {
   pinterestSearch,
   searchYouTube,
   spotifyDownload,
+  tiktokCommentStickers,
   tiktokDownload,
   tiktokSearch,
   twitterDownload,
   wallpaperSearch,
+  youtubeAudioBuffer,
   youtubeDownload,
 } from '../lib/api.js';
+import { addStickerMetadata, mediaToSticker } from '../lib/sticker.js';
+import { db } from '../lib/db.js';
 import { trackSent } from '../lib/state.js';
 
 function kindFromUrl(url) {
@@ -104,6 +109,25 @@ async function sendMediaUrl(ctx, url, caption = '', options = {}) {
   } catch (err) {
     throw new Error(`No se pudo enviar el archivo: ${err.message}`);
   }
+}
+
+// .play / .ytmp3: descarga el audio con yt-dlp y lo envía como buffer. Así
+// no dependemos del enlace firmado de googlevideo, que a veces da 403 al
+// descargarlo desde el servidor (era la causa de que .play fallara).
+async function sendYoutubeAudio(ctx, url) {
+  try {
+    const buffer = await youtubeAudioBuffer(url);
+    const sent = await ctx.sock.sendMessage(
+      ctx.chat,
+      { audio: buffer, mimetype: 'audio/mp4', fileName: 'zenitsu.m4a' },
+      { quoted: ctx.msg },
+    );
+    trackSent(sent);
+    return;
+  } catch {}
+  // Respaldo: enlace directo (por si el cliente de YouTube cambia).
+  const r = await youtubeDownload(url, 'audio');
+  await sendMediaUrl(ctx, r.urls[0], '', { kind: 'audio', fileName: 'zenitsu.m4a' });
 }
 
 async function sendMany(ctx, urls, caption, options = {}) {
@@ -231,22 +255,13 @@ export default [
       }
       let url = extractUrl(query);
       let title = '';
-      let author = '';
       if (!url) {
         const results = await searchYouTube(query, 1);
         url = results[0].url;
         title = results[0].title;
-        author = results[0].author;
       }
-      await ctx.reply(`🔎 *Buscando:* ${title || url}\n\n_Espera un momento..._`);
-      const r = await youtubeDownload(url, 'audio');
-      title = title || r.title || 'Audio de YouTube';
-      await sendMediaUrl(
-        ctx,
-        r.urls[0],
-        `🎵 *${truncate(title, 200)}*\n${author ? `👤 ${author}\n` : ''}${r.duration ? `⏱️ ${r.duration}\n` : ''}🔗 ${url}`,
-        { kind: 'audio', fileName: 'zenitsu.m4a' },
-      );
+      await ctx.reply(`🔎 *Buscando:* ${truncate(title || url, 200)}\n\n_Espera un momento..._`);
+      await sendYoutubeAudio(ctx, url);
     },
   },
   {
@@ -262,13 +277,7 @@ export default [
         return;
       }
       await ctx.reply('🎧 *Descargando audio...*');
-      const r = await youtubeDownload(url, 'audio');
-      await sendMediaUrl(
-        ctx,
-        r.urls[0],
-        `🎵 *${truncate(r.title || 'Audio de YouTube', 200)}*\n${r.author ? `👤 ${r.author}\n` : ''}${r.duration ? `⏱️ ${r.duration}\n` : ''}🔗 ${url}`,
-        { kind: 'audio', fileName: 'zenitsu.m4a' },
-      );
+      await sendYoutubeAudio(ctx, url);
     },
   },
   {
@@ -429,6 +438,72 @@ export default [
       }
       if (!r.video) throw new Error('No se encontró el video de TikTok');
       await sendMediaUrl(ctx, r.video, caption, { kind: 'video' });
+    },
+  },
+  {
+    name: 'ttstickers',
+    aliases: ['tiktokstickers', 'ttsticker', 'stickerscomentarios', 'ttcomentarios'],
+    category: 'downloads',
+    desc: 'Saca los stickers y fotos de los comentarios de un video de TikTok.',
+    usage: 'ttstickers <enlace> [cantidad]',
+    async execute(ctx) {
+      const link = extractUrl(ctx.text);
+      if (!link) {
+        await ctx.reply(
+          `💡 Uso: *${ctx.prefix}ttstickers* https://vm.tiktok.com/... [cantidad]\n\n` +
+            `Saco los stickers y fotos que la gente mandó en los comentarios.`,
+        );
+        return;
+      }
+      const numberArg = [...ctx.args].reverse().find((a) => /^\d{1,2}$/.test(a));
+      const max = Math.min(30, Math.max(1, Number(numberArg) || 12));
+      await ctx.reply('🔎 *Buscando stickers en los comentarios...*\n\n_Esto puede tardar unos segundos._');
+      const res = await tiktokCommentStickers(link, { max });
+      if (!res.stickers.length) {
+        await ctx.reply(
+          `😕 *No encontré stickers ni fotos en los comentarios.*\n\n` +
+            `▸ Comentarios revisados: *${res.scanned}*\n\n` +
+            `💡 Prueba con un video que tenga comentarios con stickers o fotos.`,
+        );
+        return;
+      }
+      await ctx.reply(
+        `🎨 *STICKERS ENCONTRADOS*\n\n` +
+          `▸ Video: *${res.videoId}*\n` +
+          `▸ Comentarios revisados: *${res.scanned}*\n` +
+          `▸ Stickers: *${res.stickers.length}*\n\n` +
+          `_Enviando..._`,
+      );
+      const pack = db().stickerPack;
+      const author = db().stickerAuthor;
+      let sent = 0;
+      for (const item of res.stickers) {
+        try {
+          const buffer = await fetchBuffer(
+            item.url,
+            { headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://www.tiktok.com/' } },
+            60000,
+          );
+          if (!buffer?.length) continue;
+          let webp;
+          // Sticker animado de TikTok: se conserva tal cual (no se deforma ni
+          // se recorta). Si pesa demasiado para WhatsApp, se reduce el primer
+          // fotograma con el ajuste "contain" (sin estirar).
+          if (item.kind === 'sticker' && buffer.length <= 900 * 1024) {
+            webp = await addStickerMetadata(buffer, pack, author);
+          } else {
+            webp = await mediaToSticker(buffer, { isVideo: false, pack, author });
+          }
+          const sentMsg = await ctx.sock.sendMessage(ctx.chat, { sticker: webp }, { quoted: ctx.msg });
+          trackSent(sentMsg);
+          sent++;
+          await sleep(600);
+        } catch {
+          // Un sticker caído o muy pesado no debe tumbar los demás.
+        }
+      }
+      if (!sent) throw new Error('No pude convertir ningún sticker de ese video');
+      await ctx.reply(`✅ Envié *${sent}* stickers de los comentarios. ⚡`);
     },
   },
   {
