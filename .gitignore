@@ -3,6 +3,7 @@ session/
 session-backup/
 tmp/
 database/
+assets/youtube-cookies.txt
 *.log
 .DS_Store
 npm-debug.log*

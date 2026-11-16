@@ -24,10 +24,13 @@ import {
   tiktokSearch,
   twitterDownload,
   wallpaperSearch,
+  youtubeClientProbe,
+  youtubeCookiesStatus,
   ytdlpDiagnostics,
   youtubeAudioBuffer,
   youtubeDownload,
 } from '../lib/api.js';
+import { yosoyyoBase, yosoyyoCheckKey } from '../lib/yosoyyo.js';
 import { addStickerMetadata, mediaToSticker } from '../lib/sticker.js';
 import { db } from '../lib/db.js';
 import { trackSent } from '../lib/state.js';
@@ -530,7 +533,7 @@ export default [
     usage: 'playdiag',
     owner: true,
     async execute(ctx) {
-      await ctx.reply('🩺 *Diagnóstico de descargas...*');
+      await ctx.reply('🩺 *Diagnóstico de descargas...*\n\n_Puede tardar un minuto._');
       const lines = [`⚙️ Node: *${process.version}* · ${process.platform}/${process.arch}`];
       try {
         const diag = await ytdlpDiagnostics();
@@ -552,18 +555,67 @@ export default [
       } catch (err) {
         lines.push(`\n🎬 *ffmpeg:* ❌ ${err.message}`);
       }
+
+      // Cookies de YouTube: sin ellas, una IP de servidor suele recibir
+      // "Sign in to confirm you're not a bot".
+      const cookies = youtubeCookiesStatus();
+      lines.push(
+        `\n🍪 *Cookies de YouTube:* ` +
+          (cookies.configured
+            ? `✅ ${cookies.cookies} cookie(s)`
+            : '❌ no configuradas (sube un .txt con *.setcookies*)'),
+      );
+
+      // API de YO SOY YO: si hay key, .play la usa primero.
       try {
-        const r = await youtubeDownload('https://www.youtube.com/watch?v=jNQXAC9IVRw', 'audio');
-        const host = (() => {
-          try {
-            return new URL(r.urls[0]).hostname;
-          } catch {
-            return 'desconocido';
-          }
-        })();
-        lines.push(`\n✅ *YouTube:* respondió\n▸ Título: ${truncate(r.title || '(sin título)', 60)}\n▸ Enlace: \`${host}\``);
+        const base = yosoyyoBase();
+        const key = await yosoyyoCheckKey();
+        lines.push(
+          `\n🔌 *YO SOY YO:* ${key.valid ? '✅ key válida' : key.configured ? `⚠️ ${key.message}` : '❌ sin key (.setapi yosoyyo TU_KEY)'}` +
+            `\n▸ API: \`${(new URL(base)).hostname}\``,
+        );
       } catch (err) {
-        lines.push(`\n❌ *YouTube:* ${truncate(err.message || String(err), 300)}`);
+        lines.push(`\n🔌 *YO SOY YO:* ❌ ${truncate(err.message || String(err), 120)}`);
+      }
+
+      // Qué cliente de YouTube entrega enlace desde ESTE servidor.
+      let anyClient = false;
+      try {
+        const probes = await youtubeClientProbe(
+          'https://www.youtube.com/watch?v=jNQXAC9IVRw',
+          ['android_vr', 'android', ''],
+          40000,
+        );
+        anyClient = probes.some((p) => p.ok);
+        lines.push(
+          '\n🎥 *Clientes de YouTube:*\n' +
+            probes
+              .map((p) => `▸ \`${p.client}\` → ${p.ok ? '✅' : '❌'}`)
+              .join('\n'),
+        );
+      } catch (err) {
+        lines.push(`\n🎥 *Clientes de YouTube:* ❌ ${truncate(err.message || String(err), 120)}`);
+      }
+
+      if (anyClient) {
+        try {
+          const r = await youtubeDownload('https://www.youtube.com/watch?v=jNQXAC9IVRw', 'audio');
+          const host = (() => {
+            try {
+              return new URL(r.urls[0]).hostname;
+            } catch {
+              return 'desconocido';
+            }
+          })();
+          lines.push(`\n✅ *YouTube:* respondió\n▸ Título: ${truncate(r.title || '(sin título)', 60)}\n▸ Enlace: \`${host}\``);
+        } catch (err) {
+          lines.push(`\n❌ *YouTube:* ${truncate(err.message || String(err), 300)}`);
+        }
+      } else {
+        lines.push(
+          '\n⚠️ *YouTube:* ningún cliente entregó enlace. ' +
+            'Sube cookies con *.setcookies* o configura la key de YO SOY YO.',
+        );
       }
       await ctx.reply(lines.join('\n'));
     },

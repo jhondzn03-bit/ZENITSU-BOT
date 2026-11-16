@@ -2244,6 +2244,70 @@ export default [
     },
   },
   {
+    name: 'setcookies',
+    aliases: ['cookies', 'ytcookies', 'youtubecookies'],
+    category: 'owner',
+    desc: 'Sube cookies de YouTube para que .play no sufra el bloqueo de "no eres un bot".',
+    usage: 'setcookies (responde a un .txt) | setcookies estado | setcookies off',
+    owner: true,
+    async execute(ctx) {
+      const { youtubeCookiesPath, youtubeCookiesStatus } = await import('../lib/api.js');
+      const arg = String(ctx.args[0] || '').toLowerCase();
+
+      if (['off', 'reset', 'borrar', 'quitar', 'eliminar'].includes(arg)) {
+        const file = youtubeCookiesPath();
+        if (file) {
+          try {
+            fs.rmSync(file, { force: true });
+          } catch {}
+        }
+        await ctx.reply('🍪 Cookies de YouTube eliminadas. .play volverá a usar solo yt-dlp.');
+        return;
+      }
+
+      if (ctx.quoted) {
+        try {
+          const buffer = await ctx.downloadQuoted();
+          const text = buffer.toString('utf8');
+          if (!/youtube\.com/i.test(text) || !/\t|# Netscape HTTP Cookie File/i.test(text)) {
+            await ctx.reply(
+              '❌ Ese archivo no parece un *cookies.txt* de YouTube.\n\n' +
+                '💡 Exporta las cookies con una extensión del navegador (formato Netscape) y mándame el .txt.',
+            );
+            return;
+          }
+          const dest = path.join(config.assetsDir, 'youtube-cookies.txt');
+          fs.mkdirSync(config.assetsDir, { recursive: true });
+          fs.writeFileSync(dest, text, { mode: 0o600 });
+          const st = youtubeCookiesStatus();
+          await ctx.reply(
+            `✅ *COOKIES DE YOUTUBE GUARDADAS*\n\n` +
+              `▸ Cookies de YouTube: *${st.cookies}*\n` +
+              `▸ Archivo: \`assets/youtube-cookies.txt\`\n\n` +
+              `Ahora *${ctx.prefix}play* puede saltarse el bloqueo de bot. ` +
+              `Si vuelve a fallar, exporta cookies nuevas (caducan).`,
+          );
+        } catch (err) {
+          await ctx.reply(`❌ No pude leer el archivo: ${err.message || err}`);
+        }
+        return;
+      }
+
+      const st = youtubeCookiesStatus();
+      await ctx.reply(
+        `🍪 *COOKIES DE YOUTUBE*\n\n` +
+          (st.configured
+            ? `▸ Estado: ✅ configuradas\n▸ Cookies: *${st.cookies}*\n▸ Archivo: \`${st.path}\``
+            : '▸ Estado: ❌ no configuradas') +
+          '\n\n💡 *Cómo subirlas:*\n' +
+          '1. Instala una extensión que exporte cookies en formato Netscape (por ejemplo “Get cookies.txt LOCALLY”).\n' +
+          '2. Entra a youtube.com con tu cuenta y exporta las cookies.\n' +
+          `3. Envíame el archivo .txt y respóndele con *${ctx.prefix}setcookies*.\n\n` +
+          `💡 Para borrarlas: *${ctx.prefix}setcookies off*`,
+      );
+    },
+  },
+  {
     name: 'setapi',
     aliases: ['apikey', 'setkey'],
     category: 'owner',
@@ -2256,9 +2320,13 @@ export default [
       const value = rest.join(' ').trim();
       if (!name) {
         await ctx.reply(
-          `💡 *APIs disponibles:*\n▸ yosoyyo — API Hub YO SOY YO (YouTube, IA, TikTok)\n▸ gemini — Google Gemini\n\n` +
+          `💡 *APIs disponibles:*\n` +
+            `▸ yosoyyo — API Hub YO SOY YO (key de YouTube, IA y TikTok)\n` +
+            `▸ youtube — URL base de YO SOY YO (opcional)\n` +
+            `▸ gemini — Google Gemini\n\n` +
             (ctx.isSubbot ? '▸ La key se guarda SOLO para este subbot.\n\n' : '') +
-            `💡 Uso: ${ctx.prefix}setapi yosoyyo TU_API_KEY`,
+            `💡 Uso: ${ctx.prefix}setapi yosoyyo TU_API_KEY\n` +
+            `💡 Base: ${ctx.prefix}setapi youtube https://api-yosoyyo-api-ofc.onrender.com`,
         );
         return;
       }
@@ -2267,6 +2335,13 @@ export default [
         return;
       }
       const key = name.toLowerCase();
+      if (key === 'youtube' && !/^https?:\/\//i.test(value)) {
+        await ctx.reply(
+          `❌ Para *youtube* necesito una URL base.\n\n` +
+            `💡 Ejemplo: *${ctx.prefix}setapi youtube https://api-yosoyyo-api-ofc.onrender.com*`,
+        );
+        return;
+      }
       if (ctx.isSubbot) {
         // Aislado: cada subbot tiene sus propias keys en settings.apis.
         const own = { ...(getBotSetting(ctx.subbot, 'apis') || {}) };
@@ -2277,7 +2352,7 @@ export default [
         save();
       }
       await ctx.reply(
-        `✅ API *${key}* guardada: \`${mask(value)}\`` +
+        `✅ API *${key}* guardada: \`${key === 'youtube' ? value : mask(value)}\`` +
           (ctx.isSubbot ? '\n▸ Solo para este subbot.' : ''),
       );
     },
@@ -2296,7 +2371,9 @@ export default [
         await ctx.reply(`🔑 No hay APIs configuradas.\n\n💡 Usa *${ctx.prefix}setapi gemini TU_KEY*`);
         return;
       }
-      const list = entries.map(([k, v]) => `▸ *${k}*: \`${mask(v)}\``).join('\n');
+      const list = entries
+        .map(([k, v]) => `▸ *${k}*: \`${/^https?:\/\//i.test(String(v)) ? v : mask(v)}\``)
+        .join('\n');
       await ctx.reply(
         `🔑 *APIs configuradas*${ctx.isSubbot ? ' (de este subbot)' : ''}\n\n${list}`,
       );
