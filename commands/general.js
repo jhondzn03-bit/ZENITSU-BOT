@@ -13,6 +13,7 @@ import {
   withWatermark,
 } from '../lib/utils.js';
 import { buildMenu, buildCommandHelp, DEFAULT_MENU_STYLE } from '../lib/menu.js';
+import { sendButtons } from '../lib/buttons.js';
 import { listCustom } from '../lib/customcmd.js';
 import { participantJid } from '../lib/targets.js';
 import { effectiveSettings } from '../lib/settings.js';
@@ -113,6 +114,7 @@ async function sendMenu(ctx) {
   // La imagen/video del banner y el menú van SIEMPRE en el mismo mensaje.
   // Cada subbot usa su propio banner si lo configuró; si no, el global.
   const banner = settings.banner;
+  let menuSent = false;
   if (banner && fs.existsSync(banner)) {
     try {
       const buffer = fs.readFileSync(banner);
@@ -123,12 +125,26 @@ async function sendMenu(ctx) {
       } else {
         await ctx.send({ image: buffer, caption: text + footerNote, mentions });
       }
-      return;
+      menuSent = true;
     } catch (err) {
       console.error('[MENU] No se pudo enviar el banner con el menú:', err?.message || err);
     }
   }
-  await ctx.send({ text: text + footerNote, mentions });
+  if (!menuSent) await ctx.send({ text: text + footerNote, mentions });
+
+  // Botones de acceso rápido. Si el cliente no los acepta, se callan: el menú
+  // ya se envió arriba y no hace falta repetirlo como texto.
+  await sendButtons(ctx.sock, ctx.chat, {
+    text: '⚡ *ACCESOS RÁPIDOS*',
+    footer: 'Toca un botón o escribe el comando',
+    buttons: [
+      { id: `${ctx.prefix}menu`, text: '⚡ Menú' },
+      { id: `${ctx.prefix}evento`, text: '🎄 Evento' },
+      { id: `${ctx.prefix}stickerly`, text: '🎨 Stickers' },
+    ],
+    quoted: ctx.msg,
+    fallbackText: false,
+  }).catch(() => {});
 }
 
 export default [

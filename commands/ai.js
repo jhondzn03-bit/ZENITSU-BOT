@@ -1,6 +1,7 @@
 import { db, getChat, save } from '../lib/db.js';
 import { truncate } from '../lib/utils.js';
 import { aiImage, aiText, geminiText, ttsAudio } from '../lib/api.js';
+import { effectiveSettings } from '../lib/settings.js';
 import { audioToVoiceNote } from '../lib/sticker.js';
 
 const historyMap = new Map();
@@ -139,7 +140,7 @@ export default [
         await ctx.reply(`💡 Uso: *${ctx.prefix}gemini* <pregunta>`);
         return;
       }
-      const key = db().apis?.gemini;
+      const key = effectiveSettings(ctx.subbot).apis?.gemini;
       if (!key) {
         await ctx.reply(
           `🔑 No hay API key de Gemini configurada.\n\n💡 Usa *${ctx.prefix}setapi gemini TU_API_KEY*\n\n_Mientras tanto, responderé con la IA gratuita._`,

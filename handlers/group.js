@@ -2,7 +2,7 @@ import { config } from '../config.js';
 import { db, getGroup, save } from '../lib/db.js';
 import { jidToNumber, numberToJid, toJid, withWatermark } from '../lib/utils.js';
 import { getGroupMetadata, invalidateGroupMeta, trackSent, wasSent } from '../lib/state.js';
-import { effectiveSettings, subbotForSock } from '../lib/settings.js';
+import { effectiveSettings, ownerNumbersForSock, subbotForSock } from '../lib/settings.js';
 import { sendStickerBatch } from '../lib/stickers.js';
 
 // ─── Bienvenida y despedida (edición Zenitsu) ────────────────────────────────
@@ -286,7 +286,9 @@ export async function handleGroupParticipants(sock, update) {
   const count = meta?.participants?.length || 0;
   const desc = meta?.desc || '';
   const botNumber = jidToNumber(sock.user?.id);
-  const ownerNums = (db().owners || []).map((o) => String(o).replace(/\D/g, ''));
+  // Owners globales + los owners propios de este subbot (si es un subbot).
+  const ownerNums = ownerNumbersForSock(sock);
+  const botSettings = effectiveSettings(subbotForSock(sock));
 
   // LID → número real: para que las menciones se vean como @503xxxxx
   // y no como los dígitos del LID.
@@ -327,7 +329,7 @@ export async function handleGroupParticipants(sock, update) {
     // ── .autoadmin: el bot y el owner se hacen admin automáticamente ──────
     // Solo si el owner lo activó ({prefix}autoadmin on). Todo es silencioso
     // en el grupo: WhatsApp puede rechazar el ascenso.
-    if (db().autoAdmin) {
+    if (botSettings.autoAdmin) {
       if (action === 'add' && isBot) {
         const botEntry = findBotEntry(sock, meta);
         const botAdmin = botEntry?.admin === 'admin' || botEntry?.admin === 'superadmin';

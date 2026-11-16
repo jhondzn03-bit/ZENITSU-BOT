@@ -39,7 +39,8 @@ import {
 import { sendButtons } from '../lib/buttons.js';
 import { audioToVoiceNote, mediaToAudio, mediaToSticker, stickerToImage } from '../lib/sticker.js';
 import { sendStickerBatch } from '../lib/stickers.js';
-import { collectStickerlyStickers } from '../lib/stickerly.js';
+import { collectStickerlyPack, collectStickerlyStickers } from '../lib/stickerly.js';
+import { packFromStickerBuffers, sendStickerPack } from '../lib/stickerpack.js';
 import { trackSent } from '../lib/state.js';
 
 const LANG_NAMES = {
@@ -169,10 +170,51 @@ export default [
       const keyword = args.filter((a) => !/^\d+$/.test(a)).join(' ').trim();
 
       await ctx.reply(
-        `🎨 *Buscando stickers en Sticker.ly...*` +
+        `🎨 *Buscando un paquete de stickers en Sticker.ly...*` +
           (keyword ? `\n▸ 🔎 ${keyword}` : '\n▸ 🎲 Búsqueda aleatoria'),
       );
 
+      // 1) Intento principal: enviar el PACK completo (.wastickers).
+      try {
+        const { query, pack } = await collectStickerlyPack(keyword);
+        const urls = pack.urls.slice(0, 30);
+        const buffers = [];
+        for (const url of urls) {
+          try {
+            const buffer = await fetchBuffer(
+              url,
+              { headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://sticker.ly/' } },
+              45000,
+            );
+            if (buffer?.length) buffers.push(buffer);
+          } catch {
+            // Un sticker caído no debe tumbar el paquete.
+          }
+          if (buffers.length >= 30) break;
+        }
+        if (buffers.length >= 1) {
+          const wastickers = await packFromStickerBuffers(buffers, {
+            pack: db().stickerPack || 'ZENITSU BOT',
+            author: db().stickerAuthor || 'Zenitsu',
+          });
+          const sent = await sendStickerPack(ctx.sock, ctx.chat, wastickers, {
+            quoted: ctx.msg,
+            fileName: `${String(pack.name || 'stickers').replace(/[^\p{L}\p{N} _.-]/gu, '').trim() || 'stickers'}.wastickers`,
+            caption:
+              `🎨 *PAQUETE DE STICKERS*\n\n` +
+              `▸ 🔎 ${query}\n` +
+              `▸ 📦 ${String(pack.name || 'Sticker.ly').slice(0, 50)}\n` +
+              `▸ 🖼️ ${wastickers.entries.length} stickers\n\n` +
+              `_Toca el paquete para añadirlo a WhatsApp._`,
+          });
+          trackSent(sent);
+          return;
+        }
+      } catch (err) {
+        console.error('[STICKERLY] pack falló:', err?.message || err);
+      }
+
+      // 2) Respaldo: si WhatsApp rechaza el paquete, se mandan sueltos.
       let found;
       try {
         found = await collectStickerlyStickers(Math.min(90, count * 3), keyword);

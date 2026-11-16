@@ -321,20 +321,31 @@ function toggle(name, key, label, aliases = []) {
     desc: `Activa o desactiva ${label}.`,
     usage: `${name} on|off`,
     owner: true,
+    // Cada subbot puede configurar sus propios interruptores sin tocar a los demás.
+    subOwner: true,
     async execute(ctx) {
       const value = String(ctx.args[0] || '').toLowerCase();
+      const current = Boolean(getBotSetting(ctx.subbot, key));
       if (!value) {
-        await ctx.reply(`⚙️ *${label}:* ${db()[key] ? '✅ ON' : '❌ OFF'}\n\n💡 Uso: ${ctx.prefix}${name} on|off`);
+        await ctx.reply(
+          `⚙️ *${label}:* ${current ? '✅ ON' : '❌ OFF'}` +
+            (ctx.isSubbot ? '\n▸ Solo afecta a *este subbot*.' : '') +
+            `\n\n💡 Uso: ${ctx.prefix}${name} on|off`,
+        );
         return;
       }
-      if (['on', 'si', 'sí', '1', 'true', 'activar'].includes(value)) db()[key] = true;
-      else if (['off', 'no', '0', 'false', 'desactivar'].includes(value)) db()[key] = false;
+      let next;
+      if (['on', 'si', 'sí', '1', 'true', 'activar'].includes(value)) next = true;
+      else if (['off', 'no', '0', 'false', 'desactivar'].includes(value)) next = false;
       else {
         await ctx.reply(`❌ Valor inválido. Usa *on* u *off*.`);
         return;
       }
-      save();
-      await ctx.reply(`⚙️ *${label}:* ${db()[key] ? '✅ ON' : '❌ OFF'}`);
+      setBotSetting(ctx.subbot, key, next);
+      await ctx.reply(
+        `⚙️ *${label}:* ${next ? '✅ ON' : '❌ OFF'}` +
+          (ctx.isSubbot ? '\n▸ Aplicado solo a este subbot.' : ''),
+      );
     },
   };
 }
@@ -975,63 +986,170 @@ export default [
     name: 'setowner',
     aliases: ['ownerprincipal', 'dueño'],
     category: 'owner',
-    desc: 'Cambia el owner: el global del bot o el propio de este subbot.',
-    usage: 'setowner [número|@mención]',
+    desc: 'Agrega, lista o quita owners (máx. 3). En un subbot solo afecta a ese bot.',
+    usage: 'setowner <número|@mención> | setowner quitar <número> | setowner lista',
     owner: true,
     subOwner: true,
     async execute(ctx) {
-      let num = '';
-      if (ctx.mentioned?.length) {
-        num = await resolvePhoneFromJid(ctx, ctx.mentioned[0]);
-      }
-      if (!num && ctx.quotedSender) {
-        num = await resolvePhoneFromJid(ctx, ctx.quotedSender);
-      }
-      if (!num) num = String(ctx.args[0] || '').replace(/\D/g, '');
-      // En un subbot, sin argumentos se usa el número real de quien escribe.
-      if (!num && ctx.isSubbot) num = await resolveSenderPhone(ctx);
+      const { addSubbotOwner, removeSubbotOwner, subbotOwners } = await import(
+        '../lib/subbots.js'
+      );
+      const MAX = 3;
+      const isSub = Boolean(ctx.isSubbot);
+      const firstWord = String(ctx.args[0] || '').toLowerCase();
+      const listing = ['lista', 'list', 'ver', 'owners'].includes(firstWord);
+      const removing = ['quitar', 'borrar', 'eliminar', 'remove', 'del'].includes(firstWord);
 
-      if (num.length < 7) {
+      const current = isSub ? subbotOwners(ctx.subbot.number) : [...(db().owners || [])];
+      const who = isSub ? `del subbot *${ctx.subbot.name}*` : 'del bot principal';
+
+      // Sin argumentos: lista (si no hay ninguno, se agrega quien escribe).
+      if (!ctx.args.length) {
+        if (!current.length) {
+          const self = await resolveSenderPhone(ctx);
+          if (self.length >= 7) {
+            if (isSub) addSubbotOwner(ctx.subbot.number, self);
+            else setPrimaryOwner(self);
+            await ctx.reply(`👑 Te agregué como owner ${who}: *+${self}*`);
+            return;
+          }
+        }
         await ctx.reply(
-          ctx.isSubbot
-            ? `💡 Uso: *${ctx.prefix}setowner* 503XXXXXXXX\nTambién: *${ctx.prefix}setowner* (tú mismo) o mencionando a alguien.`
-            : `💡 Uso: *${ctx.prefix}setowner* 503XXXXXXXX`,
+          `👑 *OWNERS ${who.toUpperCase()}* (${current.length}/${MAX})\n\n` +
+            (current.length
+              ? current.map((o, i) => `${i === 0 ? '👑' : '⭐'} +${o}`).join('\n')
+              : '_(ninguno todavía)_') +
+            `\n\n💡 Agregar: *${ctx.prefix}setowner 503XXXXXXXX*\n` +
+            `💡 Quitar: *${ctx.prefix}setowner quitar 503XXXXXXXX*`,
         );
         return;
       }
 
-      if (ctx.isSubbot) {
-        const { setSubbotOwner } = await import('../lib/subbots.js');
-        const record = setSubbotOwner(ctx.subbot.number, num);
+      if (listing) {
         await ctx.reply(
-          `👑 *OWNER DE ESTE SUBBOT ACTUALIZADO*\n\n` +
-            `🤖 Subbot: *${record.name}*\n📱 +${record.number}\n` +
-            `👤 Nuevo owner: *+${num}*\n\n` +
-            `Ese owner ya puede usar *${ctx.prefix}bot on/off*, *${ctx.prefix}setname*, ` +
+          `👑 *OWNERS ${who.toUpperCase()}* (${current.length}/${MAX})\n\n` +
+            (current.length
+              ? current.map((o, i) => `${i === 0 ? '👑 principal' : '⭐'} +${o}`).join('\n')
+              : '_(ninguno todavía)_'),
+        );
+        return;
+      }
+
+      // Resolver el número objetivo (mención, respuesta, número o uno mismo).
+      let num = '';
+      if (ctx.mentioned?.length) num = await resolvePhoneFromJid(ctx, ctx.mentioned[0]);
+      if (!num && ctx.quotedSender) num = await resolvePhoneFromJid(ctx, ctx.quotedSender);
+      if (!num) {
+        const raw = String(ctx.args[removing ? 1 : 0] || '').replace(/\D/g, '');
+        if (raw.length >= 7) num = raw;
+      }
+      if (!num && !removing) num = await resolveSenderPhone(ctx);
+
+      if (num.length < 7) {
+        await ctx.reply(
+          `💡 Uso: *${ctx.prefix}setowner* 503XXXXXXXX\n` +
+            `💡 También: *${ctx.prefix}setowner @mención* · *${ctx.prefix}setowner quitar 503XXXXXXXX*`,
+        );
+        return;
+      }
+
+      if (removing) {
+        if (current.length <= 1) {
+          await ctx.reply(`⚠️ No puedo quitar al único owner ${who}.`);
+          return;
+        }
+        if (isSub) {
+          const r = removeSubbotOwner(ctx.subbot.number, num);
+          await ctx.reply(
+            r.ok
+              ? `✅ Owner quitado ${who}: *+${num}*`
+              : `ℹ️ *+${num}* no estaba en la lista ${who}.`,
+          );
+        } else {
+          const removed = removeOwner(num);
+          await ctx.reply(
+            removed ? `✅ Owner quitado: *+${num}*` : `ℹ️ *+${num}* no estaba en la lista.`,
+          );
+        }
+        return;
+      }
+
+      if (current.includes(num)) {
+        await ctx.reply(`ℹ️ *+${num}* ya es owner ${who}.`);
+        return;
+      }
+      if (current.length >= MAX) {
+        await ctx.reply(
+          `⚠️ *Límite alcanzado:* máximo *${MAX}* owners ${who}.\n\n` +
+            `Quita uno con *${ctx.prefix}setowner quitar 503XXXXXXXX* y vuelve a intentarlo.`,
+        );
+        return;
+      }
+
+      if (isSub) {
+        const r = addSubbotOwner(ctx.subbot.number, num);
+        if (!r.ok) {
+          await ctx.reply(`⚠️ No pude agregar el owner (${r.reason}).`);
+          return;
+        }
+        await ctx.reply(
+          `👑 *OWNER AGREGADO* ${who}\n\n` +
+            `🤖 Subbot: *${r.record.name}*\n📱 +${r.record.number}\n` +
+            `👤 Nuevo owner: *+${num}* (${r.record.owners.length}/${MAX})\n\n` +
+            `Ese owner puede usar *${ctx.prefix}bot on/off*, *${ctx.prefix}setname*, ` +
             `*${ctx.prefix}setbanner*, *${ctx.prefix}settheme* y los demás ajustes de este subbot.`,
         );
         return;
       }
 
-      setPrimaryOwner(num);
-      await ctx.reply(`✅ Owner principal actualizado a: *+${num}*`);
+      const added = addOwner(num);
+      await ctx.reply(
+        added
+          ? `✅ Owner agregado: *+${num}* (${db().owners.length}/${MAX})`
+          : `ℹ️ *+${num}* ya es owner.`,
+      );
     },
   },
   {
     name: 'addowner',
     aliases: ['agregarowner'],
     category: 'owner',
-    desc: 'Agrega un owner adicional.',
+    desc: 'Agrega un owner adicional (máx. 3 por bot).',
     usage: 'addowner <número>',
     owner: true,
+    subOwner: true,
     async execute(ctx) {
       const num = String(ctx.args[0] || '').replace(/\D/g, '');
       if (num.length < 7) {
         await ctx.reply(`💡 Uso: *${ctx.prefix}addowner* 503XXXXXXXX`);
         return;
       }
+      if (ctx.isSubbot) {
+        const { addSubbotOwner } = await import('../lib/subbots.js');
+        const r = addSubbotOwner(ctx.subbot.number, num);
+        if (r.ok)
+          await ctx.reply(
+            `✅ Owner agregado a este subbot: *+${num}* (${r.record.owners.length}/3)`,
+          );
+        else if (r.reason === 'limite')
+          await ctx.reply(
+            '⚠️ Este subbot ya tiene el máximo de *3* owners. Quita uno con *.delowner*.',
+          );
+        else await ctx.reply(`ℹ️ *+${num}* ya es owner de este subbot.`);
+        return;
+      }
+      if (db().owners.length >= 3) {
+        await ctx.reply(
+          `⚠️ Ya hay *3* owners (el máximo).\n\nQuita uno con *${ctx.prefix}delowner 503XXXXXXXX*.`,
+        );
+        return;
+      }
       const added = addOwner(num);
-      await ctx.reply(added ? `✅ Owner agregado: *+${num}*` : `ℹ️ *+${num}* ya es owner.`);
+      await ctx.reply(
+        added
+          ? `✅ Owner agregado: *+${num}* (${db().owners.length}/3)`
+          : `ℹ️ *+${num}* ya es owner.`,
+      );
     },
   },
   {
@@ -1041,10 +1159,23 @@ export default [
     desc: 'Elimina un owner adicional.',
     usage: 'delowner <número>',
     owner: true,
+    subOwner: true,
     async execute(ctx) {
       const num = String(ctx.args[0] || '').replace(/\D/g, '');
       if (!num) {
         await ctx.reply(`💡 Uso: *${ctx.prefix}delowner* 503XXXXXXXX`);
+        return;
+      }
+      if (ctx.isSubbot) {
+        const { removeSubbotOwner, subbotOwners } = await import('../lib/subbots.js');
+        if (subbotOwners(ctx.subbot.number).length <= 1) {
+          await ctx.reply('⚠️ No puedo eliminar al único owner de este subbot.');
+          return;
+        }
+        const r = removeSubbotOwner(ctx.subbot.number, num);
+        await ctx.reply(
+          r.ok ? `✅ Owner eliminado de este subbot: *+${num}*` : `ℹ️ *+${num}* no estaba en la lista.`,
+        );
         return;
       }
       if (db().owners.length <= 1) {
@@ -1059,12 +1190,25 @@ export default [
     name: 'owners',
     aliases: ['listaowners'],
     category: 'owner',
-    desc: 'Lista todos los owners del bot.',
+    desc: 'Lista los owners de este bot (máx. 3).',
     usage: 'owners',
     owner: true,
+    subOwner: true,
     async execute(ctx) {
+      if (ctx.isSubbot) {
+        const { subbotOwners } = await import('../lib/subbots.js');
+        const list = subbotOwners(ctx.subbot.number);
+        await ctx.reply(
+          `👑 *OWNERS DE ESTE SUBBOT* (${list.length}/3)\n\n` +
+            (list.length
+              ? list.map((o, i) => `${i === 0 ? '👑 principal' : '⭐'} +${o}`).join('\n')
+              : '(ninguno)') +
+            `\n\n💡 Agregar: *${ctx.prefix}setowner 503XXXXXXXX*`,
+        );
+        return;
+      }
       const list = db().owners.map((o, i) => `${i === 0 ? '👑' : '⭐'} +${o}`).join('\n');
-      await ctx.reply(`👑 *OWNERS DE ZENITSU BOT*\n\n${list}`);
+      await ctx.reply(`👑 *OWNERS DE ZENITSU BOT* (${db().owners.length}/3)\n\n${list}`);
     },
   },
   {
@@ -1906,17 +2050,21 @@ export default [
     desc: 'Cambia el modo de uso del bot.',
     usage: 'mode public|self|group',
     owner: true,
+    subOwner: true,
     async execute(ctx) {
       const mode = String(ctx.args[0] || '').toLowerCase();
       if (!['public', 'self', 'group'].includes(mode)) {
         await ctx.reply(
-          `💡 *Modos disponibles:*\n\n▸ *public* — Todos pueden usar el bot.\n▸ *self* — Solo el owner.\n▸ *group* — Solo en grupos.\n\n💡 Uso: *${ctx.prefix}mode public*`,
+          `💡 *Modos disponibles:*\n\n▸ *public* — Todos pueden usar el bot.\n▸ *self* — Solo el owner.\n▸ *group* — Solo en grupos.\n\n` +
+            (ctx.isSubbot ? '▸ Este modo es solo para este subbot.\n\n' : '') +
+            `💡 Uso: *${ctx.prefix}mode public*`,
         );
         return;
       }
-      db().mode = mode;
-      save();
-      await ctx.reply(`✅ Modo cambiado a: *${mode}*`);
+      setBotSetting(ctx.subbot, 'mode', mode);
+      await ctx.reply(
+        `✅ Modo cambiado a: *${mode}*` + (ctx.isSubbot ? '\n▸ Solo para este subbot.' : ''),
+      );
     },
   },
   toggle('autoread', 'autoRead', 'Auto lectura', ['leer']),
@@ -1931,29 +2079,33 @@ export default [
     desc: 'El bot y el owner se vuelven administradores automáticamente en los grupos.',
     usage: 'autoadmin on|off',
     owner: true,
+    subOwner: true,
     async execute(ctx) {
       const value = String(ctx.args[0] || '').toLowerCase();
+      const current = Boolean(getBotSetting(ctx.subbot, 'autoAdmin'));
       if (!value) {
         await ctx.reply(
-          `👑 *AUTOADMIN:* ${db().autoAdmin ? '✅ ON' : '❌ OFF'}\n\n` +
+          `👑 *AUTOADMIN:* ${current ? '✅ ON' : '❌ OFF'}\n\n` +
             '▸ Al entrar a un grupo, intento hacerme admin\n' +
-            '▸ Donde ya soy admin, asciendo al owner\n\n' +
-            `💡 Uso: ${ctx.prefix}autoadmin on|off`,
+            '▸ Donde ya soy admin, asciendo al owner\n' +
+            (ctx.isSubbot ? '▸ Solo afecta a *este subbot*.\n' : '') +
+            `\n💡 Uso: ${ctx.prefix}autoadmin on|off`,
         );
         return;
       }
-      if (['on', 'si', 'sí', '1', 'true', 'activar'].includes(value)) db().autoAdmin = true;
-      else if (['off', 'no', '0', 'false', 'desactivar'].includes(value)) db().autoAdmin = false;
+      let next;
+      if (['on', 'si', 'sí', '1', 'true', 'activar'].includes(value)) next = true;
+      else if (['off', 'no', '0', 'false', 'desactivar'].includes(value)) next = false;
       else {
         await ctx.reply('❌ Valor inválido. Usa *on* u *off*.');
         return;
       }
-      save();
+      setBotSetting(ctx.subbot, 'autoAdmin', next);
       // Al activarlo se actúa YA: en el grupo donde se ejecutó se asciende
       // al owner (si el bot puede). El feedback dice exactamente qué pasó.
       let extra = '';
       let mentions = [];
-      if (db().autoAdmin && ctx.isGroup) {
+      if (next && ctx.isGroup) {
         try {
           const r = await autoAdminSweep(ctx.sock, ctx.chat);
           if (r.botAdmin) {
@@ -1970,14 +2122,14 @@ export default [
               '▸ Desde ese momento me encargo yo en todos los grupos';
           }
         } catch {}
-      } else if (db().autoAdmin) {
+      } else if (next) {
         extra =
           '\n\n⚡ Cada vez que me hagan admin en un grupo, asciendo ahí al owner automáticamente';
       } else {
         extra = '\n\n📪 Ya no me hago admin ni asciendo a nadie automáticamente';
       }
       await ctx.reply(
-        `👑 *AUTOADMIN:* ${db().autoAdmin ? '✅ ON' : '❌ OFF'}${extra}`,
+        `👑 *AUTOADMIN:* ${next ? '✅ ON' : '❌ OFF'}${extra}`,
         mentions.length ? { mentions } : {},
       );
     },
@@ -2098,12 +2250,15 @@ export default [
     desc: 'Guarda una API key para los comandos que la necesiten.',
     usage: 'setapi <nombre> <key>',
     owner: true,
+    subOwner: true,
     async execute(ctx) {
       const [name, ...rest] = ctx.args;
       const value = rest.join(' ').trim();
       if (!name) {
         await ctx.reply(
-          `💡 *APIs disponibles:*\n▸ gemini — Google Gemini\n\n💡 Uso: ${ctx.prefix}setapi gemini TU_API_KEY`,
+          `💡 *APIs disponibles:*\n▸ yosoyyo — API Hub YO SOY YO (YouTube, IA, TikTok)\n▸ gemini — Google Gemini\n\n` +
+            (ctx.isSubbot ? '▸ La key se guarda SOLO para este subbot.\n\n' : '') +
+            `💡 Uso: ${ctx.prefix}setapi yosoyyo TU_API_KEY`,
         );
         return;
       }
@@ -2111,9 +2266,20 @@ export default [
         await ctx.reply(`💡 Uso: *${ctx.prefix}setapi* ${name} <key>`);
         return;
       }
-      db().apis[name.toLowerCase()] = value;
-      save();
-      await ctx.reply(`✅ API *${name.toLowerCase()}* guardada: \`${mask(value)}\``);
+      const key = name.toLowerCase();
+      if (ctx.isSubbot) {
+        // Aislado: cada subbot tiene sus propias keys en settings.apis.
+        const own = { ...(getBotSetting(ctx.subbot, 'apis') || {}) };
+        own[key] = value;
+        setBotSetting(ctx.subbot, 'apis', own);
+      } else {
+        db().apis[key] = value;
+        save();
+      }
+      await ctx.reply(
+        `✅ API *${key}* guardada: \`${mask(value)}\`` +
+          (ctx.isSubbot ? '\n▸ Solo para este subbot.' : ''),
+      );
     },
   },
   {
@@ -2123,14 +2289,17 @@ export default [
     desc: 'Lista las APIs configuradas.',
     usage: 'apis',
     owner: true,
+    subOwner: true,
     async execute(ctx) {
-      const entries = Object.entries(db().apis || {});
+      const entries = Object.entries(getBotSetting(ctx.subbot, 'apis') || {});
       if (!entries.length) {
         await ctx.reply(`🔑 No hay APIs configuradas.\n\n💡 Usa *${ctx.prefix}setapi gemini TU_KEY*`);
         return;
       }
       const list = entries.map(([k, v]) => `▸ *${k}*: \`${mask(v)}\``).join('\n');
-      await ctx.reply(`🔑 *APIs configuradas*\n\n${list}`);
+      await ctx.reply(
+        `🔑 *APIs configuradas*${ctx.isSubbot ? ' (de este subbot)' : ''}\n\n${list}`,
+      );
     },
   },
   {

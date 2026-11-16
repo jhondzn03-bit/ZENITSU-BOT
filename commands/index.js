@@ -1,4 +1,5 @@
 import general from './general.js';
+import event from './event.js';
 import owner from './owner.js';
 import admin from './admin.js';
 import tools from './tools.js';
@@ -17,7 +18,7 @@ import customcmd from './customcmd.js';
 import search from './search.js';
 import media from './media.js';
 
-const modules = [general, owner, admin, tools, downloads, ai, anime, fun, economy, info, extra, spam, newstuff, channel, opencode, customcmd, search, media];
+const modules = [general, event, owner, admin, tools, downloads, ai, anime, fun, economy, info, extra, spam, newstuff, channel, opencode, customcmd, search, media];
 
 export const commands = modules.flat().filter((c) => c && c.name);
 

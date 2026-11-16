@@ -18,6 +18,7 @@ import { handleMessage, handleDeletedMessage, messageCache } from './handlers/me
 import { handleGroupParticipants, handleGroupIconChange } from './handlers/group.js';
 import { invalidateGroupMeta, trackSent } from './lib/state.js';
 import { startSavedSubbots } from './lib/subbots.js';
+import { botFlag } from './lib/settings.js';
 import { resumeSpamIfEnabled } from './lib/spam.js';
 import { resumeReminders } from './lib/reminders.js';
 import { buildChannelUpdate, channelAutoUpdates, refreshChannelName, sendToChannel } from './lib/channel.js';
@@ -445,7 +446,7 @@ async function start() {
   });
 
   sock.ev.on('call', async (calls) => {
-    if (!db().antiCall) return;
+    if (!botFlag(sock, 'antiCall')) return;
     for (const call of calls) {
       if (call.status === 'offer') {
         try {

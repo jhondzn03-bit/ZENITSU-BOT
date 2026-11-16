@@ -21,7 +21,7 @@ import { findParticipant } from '../lib/targets.js';
 import { handleCustomCommand } from '../lib/customcmd.js';
 import { decorateText } from '../lib/theme.js';
 import { aiText } from '../lib/api.js';
-import { effectiveSettings, subbotForSock } from '../lib/settings.js';
+import { botFlag, effectiveSettings, subbotForSock } from '../lib/settings.js';
 
 const messageCache = new Map();
 const spamMap = new Map();
@@ -148,7 +148,8 @@ function cacheMessage(m) {
 }
 
 export function handleDeletedMessage(sock, key) {
-  if (!db().antiDelete) return;
+  // Cada bot decide si avisa de mensajes eliminados (el subbot usa el suyo).
+  if (!botFlag(sock, 'antiDelete')) return;
   const cached = messageCache.get(key?.id);
   if (!cached) return;
   messageCache.delete(key.id);
@@ -329,7 +330,9 @@ async function handleAutoAi(sock, msg, m) {
   if (!chatCfg.aiChat) return false;
   if (m.fromMe || m.isStatus) return false;
   const last = aiCooldown.get(m.chat) || 0;
-  if (Date.now() - last < 6000) return true;
+  // Pollinations permite 1 respuesta cada 45 s por IP: el chat automático
+  // espera lo mismo para no gastar el turno en un 402.
+  if (Date.now() - last < 45000) return true;
   aiCooldown.set(m.chat, Date.now());
 
   // Reacción de "pensando" mientras la IA responde.
@@ -350,6 +353,13 @@ async function handleAutoAi(sock, msg, m) {
     trackSent(sent);
     await reactStatus(sock, m, '✅');
   } catch (err) {
+    // Si la IA está en pausa por el límite de Pollinations, no se responde
+    // nada en el chat automático (evita llenar el grupo de avisos).
+    const msgErr = String(err?.message || '');
+    if (/descansando|saturada|una respuesta cada/i.test(msgErr)) {
+      await reactStatus(sock, m, '');
+      return true;
+    }
     const sent = await sock.sendMessage(
       m.chat,
       { text: withWatermark(`⚠️ La IA no respondió: ${err.message}`) },
@@ -393,8 +403,10 @@ async function isWakeRequest(sock, m, prefix, subbot) {
   if (!BOT_ON_WORDS.has(String(parts[1] || '').toLowerCase())) return false;
   const numbers = await senderNumbers(sock, m);
   if (numbers.some((n) => isOwnerNumber(n))) return true;
-  const owner = String(subbot?.owner || '').replace(/\D/g, '');
-  return Boolean(owner) && numbers.includes(owner);
+  const owners = Array.isArray(subbot?.owners)
+    ? subbot.owners
+    : [subbot?.owner].filter(Boolean);
+  return owners.some((o) => numbers.includes(String(o).replace(/\D/g, '')));
 }
 
 export async function handleMessage(sock, msg) {
@@ -421,7 +433,7 @@ export async function handleMessage(sock, msg) {
 
   if (msg.key.remoteJid === 'status@broadcast') {
     // Con .autoread o .autostatus activos, el bot marca los estados como vistos.
-    if (db().autoStatus || db().autoRead) {
+    if (settings.autoStatus || settings.autoRead) {
       try {
         await sock.readMessages([msg.key]);
       } catch {}
@@ -480,7 +492,7 @@ export async function handleMessage(sock, msg) {
       group?.antiLink ||
       group?.antiSpam ||
       hasMutedUsers ||
-      store.mode === 'self');
+      settings.mode === 'self');
 
   let groupMeta = null;
   let isAdmin = false;
@@ -503,24 +515,26 @@ export async function handleMessage(sock, msg) {
     } catch {}
   }
 
-  // Owner propio del subbot: puede personalizarlo y usar .bot / .setowner,
-  // pero no los comandos peligrosos del owner global.
+  // Owners propios del subbot (hasta 3): pueden personalizarlo y usar
+  // .bot / .setowner, pero no los comandos peligrosos del owner global.
   let subOwner = false;
-  if (subbot?.owner) {
-    const ownerNumber = String(subbot.owner).replace(/\D/g, '');
+  if (subbot) {
+    const ownerList = (Array.isArray(subbot.owners) ? subbot.owners : [subbot.owner])
+      .map((o) => String(o || '').replace(/\D/g, ''))
+      .filter(Boolean);
     const candidates = [
       m.senderNumber,
       senderRealNumber,
       jidToNumber(m.sender),
       jidToNumber(m.senderAlt),
     ].filter(Boolean);
-    subOwner = candidates.includes(ownerNumber);
+    subOwner = ownerList.length > 0 && candidates.some((c) => ownerList.includes(c));
   }
 
   // Modo de uso. Un .bot on autorizado siempre pasa, para poder reactivar
   // un subbot apagado incluso si el modo es restrictivo.
-  if (!wakeRequest && store.mode === 'self' && !owner) return;
-  if (!wakeRequest && store.mode === 'group' && !m.isGroup && !owner) return;
+  if (!wakeRequest && settings.mode === 'self' && !owner) return;
+  if (!wakeRequest && settings.mode === 'group' && !m.isGroup && !owner) return;
 
   // Grupo silenciado.
   if (!wakeRequest && group?.muted && !owner && !isAdmin) return;
@@ -573,14 +587,14 @@ export async function handleMessage(sock, msg) {
   ctx.isAdmin = owner || isAdmin;
 
   // Auto lectura.
-  if (store.autoRead) {
+  if (settings.autoRead) {
     try {
       await sock.readMessages([msg.key]);
     } catch {}
   }
 
   // Auto reacción.
-  if (store.autoReact && !m.fromMe) {
+  if (settings.autoReact && !m.fromMe) {
     await ctx.react(pick(['⚡', '🌩️', '🔥', '💛', '👀', '✨', '⚔️']));
   }
 

@@ -1,6 +1,7 @@
 import { config } from '../config.js';
 import {
   extractUrl,
+  execFileAsync,
   fetchBuffer,
   formatBytes,
   formatNumber,
@@ -23,6 +24,7 @@ import {
   tiktokSearch,
   twitterDownload,
   wallpaperSearch,
+  ytdlpDiagnostics,
   youtubeAudioBuffer,
   youtubeDownload,
 } from '../lib/api.js';
@@ -117,14 +119,22 @@ async function sendMediaUrl(ctx, url, caption = '', options = {}) {
 async function sendYoutubeAudio(ctx, url) {
   try {
     const buffer = await youtubeAudioBuffer(url);
+    // yt-dlp normalmente devuelve M4A; el respaldo de la API puede dar MP3.
+    const isM4a = buffer.length > 12 && buffer.subarray(4, 8).toString('latin1') === 'ftyp';
     const sent = await ctx.sock.sendMessage(
       ctx.chat,
-      { audio: buffer, mimetype: 'audio/mp4', fileName: 'zenitsu.m4a' },
+      {
+        audio: buffer,
+        mimetype: isM4a ? 'audio/mp4' : 'audio/mpeg',
+        fileName: isM4a ? 'zenitsu.m4a' : 'zenitsu.mp3',
+      },
       { quoted: ctx.msg },
     );
     trackSent(sent);
     return;
-  } catch {}
+  } catch (err) {
+    console.error('[PLAY] buffer falló:', err?.message || err);
+  }
   // Respaldo: enlace directo (por si el cliente de YouTube cambia).
   const r = await youtubeDownload(url, 'audio');
   await sendMediaUrl(ctx, r.urls[0], '', { kind: 'audio', fileName: 'zenitsu.m4a' });
@@ -455,14 +465,19 @@ export default [
         );
         return;
       }
-      const numberArg = [...ctx.args].reverse().find((a) => /^\d{1,2}$/.test(a));
-      const max = Math.min(30, Math.max(1, Number(numberArg) || 12));
-      await ctx.reply('🔎 *Buscando stickers en los comentarios...*\n\n_Esto puede tardar unos segundos._');
+      const numberArg = [...ctx.args].reverse().find((a) => /^\d{1,3}$/.test(a));
+      // Sin número = TODOS los stickers del video.
+      const max = numberArg ? Math.min(200, Math.max(1, Number(numberArg))) : 0;
+      await ctx.reply(
+        '🔎 *Buscando TODOS los stickers en los comentarios...*\n\n' +
+          '_Reviso comentarios y respuestas; puede tardar un poco._',
+      );
       const res = await tiktokCommentStickers(link, { max });
       if (!res.stickers.length) {
         await ctx.reply(
           `😕 *No encontré stickers ni fotos en los comentarios.*\n\n` +
-            `▸ Comentarios revisados: *${res.scanned}*\n\n` +
+            `▸ Comentarios revisados: *${res.scanned}*\n` +
+            `▸ Hilos revisados: *${res.threads}*\n\n` +
             `💡 Prueba con un video que tenga comentarios con stickers o fotos.`,
         );
         return;
@@ -471,7 +486,8 @@ export default [
         `🎨 *STICKERS ENCONTRADOS*\n\n` +
           `▸ Video: *${res.videoId}*\n` +
           `▸ Comentarios revisados: *${res.scanned}*\n` +
-          `▸ Stickers: *${res.stickers.length}*\n\n` +
+          `▸ Hilos revisados: *${res.threads}*\n` +
+          `▸ Stickers y fotos: *${res.stickers.length}*\n\n` +
           `_Enviando..._`,
       );
       const pack = db().stickerPack;
@@ -497,13 +513,59 @@ export default [
           const sentMsg = await ctx.sock.sendMessage(ctx.chat, { sticker: webp }, { quoted: ctx.msg });
           trackSent(sentMsg);
           sent++;
-          await sleep(600);
+          await sleep(350);
         } catch {
           // Un sticker caído o muy pesado no debe tumbar los demás.
         }
       }
       if (!sent) throw new Error('No pude convertir ningún sticker de ese video');
-      await ctx.reply(`✅ Envié *${sent}* stickers de los comentarios. ⚡`);
+      await ctx.reply(`✅ Envié *${sent}* de *${res.stickers.length}* stickers encontrados. ⚡`);
+    },
+  },
+  {
+    name: 'playdiag',
+    aliases: ['ytdiag', 'diagnostico', 'playtest'],
+    category: 'downloads',
+    desc: 'Diagnóstico de .play: revisa yt-dlp, ffmpeg y YouTube en el servidor.',
+    usage: 'playdiag',
+    owner: true,
+    async execute(ctx) {
+      await ctx.reply('🩺 *Diagnóstico de descargas...*');
+      const lines = [`⚙️ Node: *${process.version}* · ${process.platform}/${process.arch}`];
+      try {
+        const diag = await ytdlpDiagnostics();
+        lines.push(`\n📦 *yt-dlp resuelto:* ${diag.resolved ? `\`${diag.resolved}\`` : '❌ ninguno'}`);
+        for (const item of diag.report) {
+          const state = item.exists === false
+            ? 'no existe'
+            : item.version
+              ? `✅ ${item.version}`
+              : '❌ no ejecuta';
+          lines.push(`▸ \`${item.bin}\` → ${state}`);
+        }
+      } catch (err) {
+        lines.push(`\n❌ *yt-dlp:* ${err.message}`);
+      }
+      try {
+        const { stdout } = await execFileAsync('ffmpeg', ['-version'], { timeout: 15000 });
+        lines.push(`\n🎬 *ffmpeg:* ✅ ${String(stdout).split('\n')[0].slice(0, 80)}`);
+      } catch (err) {
+        lines.push(`\n🎬 *ffmpeg:* ❌ ${err.message}`);
+      }
+      try {
+        const r = await youtubeDownload('https://www.youtube.com/watch?v=jNQXAC9IVRw', 'audio');
+        const host = (() => {
+          try {
+            return new URL(r.urls[0]).hostname;
+          } catch {
+            return 'desconocido';
+          }
+        })();
+        lines.push(`\n✅ *YouTube:* respondió\n▸ Título: ${truncate(r.title || '(sin título)', 60)}\n▸ Enlace: \`${host}\``);
+      } catch (err) {
+        lines.push(`\n❌ *YouTube:* ${truncate(err.message || String(err), 300)}`);
+      }
+      await ctx.reply(lines.join('\n'));
     },
   },
   {
