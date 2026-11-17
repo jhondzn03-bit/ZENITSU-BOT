@@ -84,8 +84,6 @@ function suggestCommand(typed, prefix) {
     // o terminaríamos compitiendo "sticker" contra "sticker").
     const canonical = cmd.name.toLowerCase();
     if (seen.has(canonical)) continue;
-    // Los comandos +18 están retirados: no se sugieren.
-    if (cmd.category === 'nsfw') continue;
     seen.add(canonical);
     let score = Infinity;
     const d = editDistance(q, canonical);
@@ -691,15 +689,7 @@ export async function handleMessage(sock, msg) {
     return;
   }
 
-  // ── Bloqueo permanente de contenido +18 ──────────────────────────────────
-  // Los comandos NSFW fueron retirados del bot: no se ofrecen ni se ejecutan
-  // para nadie (ni siquiera owner).
-  if (cmd.category === 'nsfw') {
-    await ctx.reply(
-      '🌙 *Comando retirado* ✨\n\nEste contenido ya no forma parte del bot.',
-    );
-    return;
-  }
+  // ── Los comandos +18 están disponibles (categoría nsfw) ──────────────────
 
   ctx.command = commandName;
   ctx.args = args;

@@ -48,8 +48,6 @@ async function sendMenu(ctx) {
   const available = (ctx.commands || []).filter(
     (c) =>
       !c.hidden &&
-      // Los comandos +18 fueron retirados: ni en el menú ni contados.
-      c.category !== 'nsfw' &&
       (c.category !== 'owner' || canSeeOwnerCommand(c)) &&
       (!hidePremium || !isPremiumCmd(c)),
   );
@@ -161,11 +159,7 @@ export default [
           await ctx.reply(`❌ No existe el comando *${ctx.args[0]}*.`);
           return;
         }
-        // Los comandos +18 están retirados: su ayuda tampoco se muestra.
-        if (target.category === 'nsfw') {
-          await ctx.reply('🌙 *Comando retirado* ✨\n\nEste contenido ya no forma parte del bot.');
-          return;
-        }
+        // La ayuda de los comandos +18 también está disponible.
         await ctx.reply(
           buildCommandHelp(target, ctx.prefix, {
             subbot: ctx.isSubbot,
