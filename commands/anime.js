@@ -457,6 +457,8 @@ export default [
           `📥 *${ctx.prefix}xnxx* <nombre> — busca en XNXX\n` +
           `📥 *${ctx.prefix}gayvideo* <nombre> — videos gays\n` +
           `📥 *${ctx.prefix}pornhub* <nombre> — busca en PornHub\n\n` +
+          `🔥 *MÁS CATEGORÍAS (+18)*\n` +
+          `▸ *${ctx.prefix}nsfwplusmenu* — videos aleatorios, girls, tetas, gayrand y rule34\n\n` +
           `*¿CÓMO SE USA?*\n` +
           `1️⃣ *${ctx.prefix}pornhub <nombre>* → te muestro una lista con 15 resultados\n` +
           `2️⃣ *${ctx.prefix}pornhub 3* → descargo el número 3 de esa lista\n\n` +
