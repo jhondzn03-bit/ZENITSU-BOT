@@ -4,9 +4,12 @@ import {
   isUrl,
   jidToNumber,
   truncate,
+  compressVideoForWhatsApp,
+  tmpFile,
 } from '../lib/utils.js';
 import {
   adultVideoBuffer,
+  adultVideoDownloadTo,
   adultVideoInfo,
   adultVideoSearch,
   getAnimeQuote,
@@ -21,6 +24,7 @@ import {
 } from '../lib/api.js';
 import { gifToMp4 } from '../lib/sticker.js';
 import { trackSent } from '../lib/state.js';
+import fs from 'node:fs';
 
 function targetMention(ctx) {
   const jid = ctx.mentioned?.[0] || ctx.quoted?.sender || '';
@@ -190,15 +194,71 @@ async function sendAdultVideo(ctx, query, { site = 'xvideos', gay = false, sourc
   await ctx.reply(formatAdultList(entry));
 }
 
-// Envía el buffer del video +18 con su caption.
+// Envía el buffer del video +18 con su caption. Si el mp4 supera el límite de
+// WhatsApp, se descarga la versión más liviana y se comprime con ffmpeg; si no
+// se puede comprimir, se manda como documento (límite mucho mayor).
 async function sendAdultVideoBuffer(ctx, info, label) {
-  const buffer = await adultVideoBuffer(info);
+  let buffer;
+  let extra = '';
+  try {
+    buffer = await adultVideoBuffer(info);
+  } catch (err) {
+    if (!/muy pesado/i.test(String(err?.message || ''))) throw err;
+
+    await ctx.reply(
+      '⚠️ *El video pesa más de lo que WhatsApp acepta.*\n\n' +
+        '_Descargando y comprimiéndolo... esto puede tardar un poco_ ⏳',
+    );
+
+    const source = tmpFile('mp4');
+    try {
+      await adultVideoDownloadTo(info, source);
+      const compressed = await compressVideoForWhatsApp(source, { maxBytes: 32 * 1024 * 1024 });
+      if (!compressed) throw new Error('no pude comprimirlo lo suficiente');
+      buffer = compressed.buffer;
+      const mb = (compressed.bytes / 1048576).toFixed(1);
+      extra = compressed.trimmed
+        ? `\n✂️ Recortado a ${Math.max(1, Math.round(compressed.seconds / 60))} min y comprimido (${mb} MB)`
+        : `\n🗜️ Comprimido para WhatsApp (${mb} MB)`;
+    } catch (compressErr) {
+      console.error('[ADULT] No se pudo comprimir:', compressErr?.message || compressErr);
+      // Último recurso: documento (WhatsApp permite archivos mucho más grandes).
+      const url = (info.urls || [])[info.urls.length - 1];
+      if (!url) throw compressErr;
+      const clean = String(info.title || 'video')
+        .replace(/[^\p{L}\p{N} _-]+/gu, '')
+        .trim()
+        .slice(0, 60);
+      try {
+        const sent = await ctx.sock.sendMessage(
+          ctx.chat,
+          {
+            document: { url },
+            mimetype: 'video/mp4',
+            fileName: `${clean || 'video'}.mp4`,
+            caption:
+              `🔥 *+18 · ${label}*\n🎬 ${truncate(info.title, 120)}\n\n` +
+              '📎 Va como *documento* porque el video es muy pesado.',
+          },
+          { quoted: ctx.msg },
+        );
+        trackSent(sent);
+        return;
+      } catch (docErr) {
+        console.error('[ADULT] Tampoco se pudo enviar como documento:', docErr?.message || docErr);
+        throw new Error('el video es demasiado pesado y no pude comprimirlo. Prueba con uno más corto.');
+      }
+    } finally {
+      fs.rmSync(source, { force: true });
+    }
+  }
+
   const sent = await ctx.sock.sendMessage(
     ctx.chat,
     {
       video: buffer,
       mimetype: 'video/mp4',
-      caption: `🔥 *+18 · ${label}*\n🎬 ${truncate(info.title, 120)}`,
+      caption: `🔥 *+18 · ${label}*\n🎬 ${truncate(info.title, 120)}${extra}`,
     },
     { quoted: ctx.msg },
   );
