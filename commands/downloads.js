@@ -2,6 +2,7 @@ import { config } from '../config.js';
 import {
   extractUrl,
   execFileAsync,
+  ensureFfmpeg,
   fetchBuffer,
   formatBytes,
   formatNumber,
@@ -29,6 +30,7 @@ import {
   ytdlpDiagnostics,
   youtubeAudioBuffer,
   youtubeDownload,
+  youtubeVideoBuffer,
 } from '../lib/api.js';
 import { yosoyyoBase, yosoyyoCheckKey } from '../lib/yosoyyo.js';
 import { addStickerMetadata, mediaToSticker } from '../lib/sticker.js';
@@ -45,10 +47,12 @@ function kindFromUrl(url) {
 
 async function sendMediaUrl(ctx, url, caption = '', options = {}) {
   const kind = options.kind || kindFromUrl(url);
-  // Las URLs de googlevideo van firmadas para ESTA IP: los servidores de
-  // WhatsApp las descargan desde otra IP y reciben 403. Por eso los archivos
-  // de YouTube se envían siempre como buffer (descarga local + subida).
-  const mustBuffer = /googlevideo\.com/i.test(String(url));
+  // Los archivos de YouTube se envían siempre como buffer (descarga local +
+  // subida): las URLs de googlevideo van firmadas para ESTA IP y las
+  // proxificadas de Invidious/Piped pueden rechazar a los servidores de
+  // WhatsApp. Descargando aquí, el envío no depende de terceros.
+  const mustBuffer =
+    /googlevideo\.com|chocolatemoo53|piped|invidious|\/videoplayback\?/i.test(String(url));
   if (kind === 'audio') {
     if (!mustBuffer) {
       try {
@@ -306,13 +310,24 @@ export default [
         return;
       }
       await ctx.reply('🎬 *Descargando video...*');
-      const r = await youtubeDownload(url, 'video');
-      await sendMediaUrl(
-        ctx,
-        r.urls[0],
-        `🎬 *${truncate(r.title || 'Video de YouTube', 200)}*\n${r.author ? `👤 ${r.author}\n` : ''}${r.duration ? `⏱️ ${r.duration}\n` : ''}🔗 ${url}`,
-        { kind: 'video' },
-      );
+      const captionFor = (r) =>
+        `🎬 *${truncate(r.title || 'Video de YouTube', 200)}*\n${r.author ? `👤 ${r.author}\n` : ''}${r.duration ? `⏱️ ${r.duration}\n` : ''}🔗 ${url}`;
+      try {
+        const r = await youtubeDownload(url, 'video');
+        await sendMediaUrl(ctx, r.urls[0], captionFor(r), { kind: 'video' });
+        return;
+      } catch (err) {
+        console.error('[YTMP4] El enlace directo falló, probando descarga completa:', err?.message || err);
+      }
+      // Algunos videos no tienen MP4 con audio en Invidious/Piped: se bajan
+      // video y audio por separado y se pegan con ffmpeg.
+      const video = await youtubeVideoBuffer(url);
+      if (video.buffer.length > config.maxFileSize) {
+        throw new Error(
+          `El video pesa ${formatBytes(video.buffer.length)} y supera el límite (${formatBytes(config.maxFileSize)}).\n\n💡 Prueba con *${ctx.prefix}ytdoc* para recibirlo como documento.`,
+        );
+      }
+      await ctx.send({ video: video.buffer, caption: captionFor(video), mimetype: 'video/mp4' });
     },
   },
   {
@@ -550,8 +565,9 @@ export default [
         lines.push(`\n❌ *yt-dlp:* ${err.message}`);
       }
       try {
-        const { stdout } = await execFileAsync('ffmpeg', ['-version'], { timeout: 15000 });
-        lines.push(`\n🎬 *ffmpeg:* ✅ ${String(stdout).split('\n')[0].slice(0, 80)}`);
+        const bin = await ensureFfmpeg();
+        const { stdout } = await execFileAsync(bin, ['-version'], { timeout: 15000 });
+        lines.push(`\n🎬 *ffmpeg:* ✅ ${String(stdout).split('\n')[0].slice(0, 80)}\n▸ \`${bin}\``);
       } catch (err) {
         lines.push(`\n🎬 *ffmpeg:* ❌ ${err.message}`);
       }
@@ -767,8 +783,8 @@ export default [
         return;
       }
       await ctx.reply('📁 *Descargando video como documento...*');
-      const r = await youtubeDownload(url, 'video');
-      const buffer = await fetchBuffer(r.urls[0]);
+      const r = await youtubeVideoBuffer(url);
+      const buffer = r.buffer;
       if (buffer.length > config.maxFileSize) {
         await ctx.reply(`⚠️ El video pesa *${formatBytes(buffer.length)}* y supera el límite (${formatBytes(config.maxFileSize)}).\n\n💡 Prueba con *${ctx.prefix}ytmp4* (calidad más liviana).`);
         return;
