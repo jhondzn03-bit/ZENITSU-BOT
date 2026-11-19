@@ -6,6 +6,15 @@ import {
   removeReminder,
 } from '../lib/reminders.js';
 import { fetchBuffer, truncate, withWatermark } from '../lib/utils.js';
+import {
+  cancelCollection,
+  listCollections,
+  parseSchedule,
+  sendCollectionByName,
+  setCollectionSock,
+  splitNameAndSchedule,
+  startCollection,
+} from '../lib/collections.js';
 
 // ─── Comandos de la tanda de actualizaciones ─────────────────────────────
 // .remind  — recordatorios programados persistentes
@@ -208,6 +217,109 @@ export default [
       await ctx.send({
         text: `${visible.trim()}${padding}${hidden.trim()}`,
       });
+    },
+  },
+  {
+    name: 'coleccion',
+    aliases: ['colecciontiktok', 'ttcoleccion', 'micoleccion'],
+    category: 'tools',
+    desc: 'Guarda links de TikTok en una colección y la publica a la hora que elijas.',
+    usage:
+      'coleccion <nombre> [6:00PM MX] | coleccion list | coleccion enviar <nombre> | coleccion cancelar',
+    async execute(ctx) {
+      const sub = String(ctx.args[0] || '').toLowerCase();
+      setCollectionSock(ctx.sock);
+
+      if (sub === 'list' || sub === 'lista') {
+        const mine = listCollections(ctx.sender);
+        if (!mine.length) {
+          await ctx.reply('📭 No tienes colecciones todavía.\n\nCrea una con *.coleccion NOMBRE*.');
+          return;
+        }
+        const lines = mine.map((c) => {
+          const state =
+            c.status === 'active'
+              ? `abierta${c.scheduledAt ? ` · 🕐 ${c.scheduleLabel}` : ''}`
+              : c.status === 'sent'
+                ? 'enviada'
+                : 'cancelada';
+          return `▸ #${c.id} *${c.name}* — ${c.links.length} links · ${state}`;
+        });
+        await ctx.reply(`🎬 *TUS COLECCIONES*\n\n${lines.join('\n')}`);
+        return;
+      }
+
+      if (sub === 'cancelar' || sub === 'cancel') {
+        const item = cancelCollection(ctx.sender, ctx.chat);
+        await ctx.reply(
+          item
+            ? `🗑️ Colección *${item.name}* cancelada. Se guardaron ${item.links.length} links por si la reabres.`
+            : 'No tenías ninguna colección abierta en este chat.',
+        );
+        return;
+      }
+
+      if (sub === 'enviar' || sub === 'send' || sub === 'publicar') {
+        const name = ctx.args.slice(1).join(' ').trim();
+        if (!name) {
+          await ctx.reply(`💡 Uso: *${ctx.prefix}coleccion enviar <nombre>*`);
+          return;
+        }
+        const item = sendCollectionByName(name, ctx.sender);
+        await ctx.reply(
+          item
+            ? `✅ Colección *${item.name}* publicada con *${item.links.length}* links.`
+            : `❌ No encontré una colección abierta llamada *${name}*. Revisa con *${ctx.prefix}coleccion list*.`,
+        );
+        return;
+      }
+
+      if (!ctx.args.length) {
+        await ctx.reply(
+          `🎬 *COLECCIONES DE TIKTOK*\n\n` +
+            `▸ *${ctx.prefix}coleccion SNNLPPY* — abre la colección y ve pegando links de TikTok\n` +
+            `▸ *${ctx.prefix}coleccion SNNLPPY 6:00PM MX* — se publica sola a esa hora (MX = México)\n` +
+            `▸ *${ctx.prefix}coleccion enviar SNNLPPY* — publícala ya\n` +
+            `▸ *${ctx.prefix}coleccion list* — ver tus colecciones\n` +
+            `▸ *${ctx.prefix}coleccion cancelar* — cerrar la actual\n\n` +
+            `_Se permiten hasta 60 links. Si el grupo tiene anti-enlaces, los links de la colección se respetan._`,
+        );
+        return;
+      }
+
+      const { name, scheduleText } = splitNameAndSchedule(ctx.args);
+      if (!name) {
+        await ctx.reply(`❌ Ponle un nombre: *${ctx.prefix}coleccion NOMBRE*.`);
+        return;
+      }
+
+      let scheduleInfo = null;
+      if (scheduleText) {
+        scheduleInfo = parseSchedule(scheduleText);
+        if (!scheduleInfo) {
+          await ctx.reply(
+            `❌ No entendí la hora *${scheduleText}*.\n\n` +
+              `Ejemplos: *6:00PM MX*, *18:30*, *7 pm sv*.`,
+          );
+          return;
+        }
+      }
+
+      const item = startCollection({
+        sender: ctx.sender,
+        senderNumber: ctx.senderNumber,
+        chat: ctx.chat,
+        name,
+        scheduleInfo,
+      });
+      await ctx.reply(
+        `✅ *COLECCIÓN ABIERTA: ${item.name}*\n\n` +
+          `▸ Ahora ve enviando los links de TikTok, uno por uno.\n` +
+          (item.scheduledAt
+            ? `▸ 🕐 Se publica sola a las *${item.scheduleLabel}*.\n`
+            : `▸ Cuando termines: *${ctx.prefix}coleccion enviar ${item.name}*.\n`) +
+          `▸ Máximo 60 links. Cierra con *${ctx.prefix}coleccion cancelar*.`,
+      );
     },
   },
 ];

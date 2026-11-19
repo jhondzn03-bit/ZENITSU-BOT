@@ -19,6 +19,7 @@ import { serializeMessage } from '../lib/serialize.js';
 import { trackSent, wasSent, getGroupMetadata } from '../lib/state.js';
 import { findParticipant } from '../lib/targets.js';
 import { handleCustomCommand } from '../lib/customcmd.js';
+import { captureCollectionLink, hasActiveCollection } from '../lib/collections.js';
 import { decorateText } from '../lib/theme.js';
 import { aiText } from '../lib/api.js';
 import { botFlag, effectiveSettings, subbotForSock } from '../lib/settings.js';
@@ -502,7 +503,13 @@ export async function handleMessage(sock, msg) {
   // borra AL INSTANTE, antes de consultar metadata o ejecutar cualquier otra
   // cosa. Aplica a todos (menos a los mensajes del propio bot).
   let linkStrike = false;
-  if (m.isGroup && group?.antiLink && !m.fromMe && containsLink(m.body)) {
+  if (
+    m.isGroup &&
+    group?.antiLink &&
+    !m.fromMe &&
+    containsLink(m.body) &&
+    !hasActiveCollection(m.sender, m.chat)
+  ) {
     linkStrike = true;
     try {
       await sock.sendMessage(m.chat, { delete: m.key });
@@ -689,6 +696,13 @@ export async function handleMessage(sock, msg) {
   }
 
   if (!isCommand) {
+    // Si hay una colección de TikTok abierta, los links van para ella en vez
+    // de caer en la IA automática.
+    try {
+      if (await captureCollectionLink(ctx, m)) return;
+    } catch (err) {
+      console.error('[COLECCION] al capturar link:', err?.message || err);
+    }
     await handleAutoAi(sock, msg, m);
     return;
   }

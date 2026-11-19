@@ -21,6 +21,7 @@ import { startSavedSubbots } from './lib/subbots.js';
 import { botFlag } from './lib/settings.js';
 import { resumeSpamIfEnabled } from './lib/spam.js';
 import { resumeReminders } from './lib/reminders.js';
+import { resumeCollections } from './lib/collections.js';
 import {
   buildChannelUpdate,
   channelAutoUpdates,
@@ -307,6 +308,13 @@ async function start() {
         const r = resumeReminders(sock);
         if (r.scheduled || r.discarded) {
           console.log(`⏰ Recordatorios: ${r.scheduled} activos, ${r.discarded} descartados.`);
+        }
+      } catch {}
+
+      try {
+        const c = resumeCollections(sock);
+        if (c.scheduled || c.sent) {
+          console.log(`🎬 Colecciones: ${c.scheduled} programadas, ${c.sent} publicadas al conectar.`);
         }
       } catch {}
 
