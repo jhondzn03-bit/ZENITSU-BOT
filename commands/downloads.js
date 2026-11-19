@@ -128,6 +128,23 @@ async function sendYoutubeAudio(ctx, url) {
     const buffer = await youtubeAudioBuffer(url);
     // yt-dlp normalmente devuelve M4A; el respaldo de la API puede dar MP3.
     const isM4a = buffer.length > 12 && buffer.subarray(4, 8).toString('latin1') === 'ftyp';
+    // WhatsApp solo acepta audios de hasta ~16 MB como mensaje de audio. Los
+    // mixes de 1-2 h llegan a 40-90 MB: se envían como documento para que no
+    // falle el envío.
+    if (buffer.length > 16 * 1024 * 1024) {
+      const sent = await ctx.sock.sendMessage(
+        ctx.chat,
+        {
+          document: buffer,
+          mimetype: isM4a ? 'audio/mp4' : 'audio/mpeg',
+          fileName: isM4a ? 'zenitsu-audio.m4a' : 'zenitsu-audio.mp3',
+          caption: '🎧 *Audio de YouTube*\n\n📎 Va como documento porque es demasiado grande para un audio normal.',
+        },
+        { quoted: ctx.msg },
+      );
+      trackSent(sent);
+      return;
+    }
     const sent = await ctx.sock.sendMessage(
       ctx.chat,
       {
