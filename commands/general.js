@@ -119,7 +119,12 @@ async function sendMenu(ctx) {
       const isVideo =
         settings.bannerType === 'video' || /\.(mp4|webm)$/i.test(String(banner));
       if (isVideo) {
-        await ctx.send({ video: buffer, gifPlayback: true, caption: text + footerNote, mentions });
+        await ctx.send({
+          video: buffer,
+          ...(settings.bannerSound ? {} : { gifPlayback: true }),
+          caption: text + footerNote,
+          mentions,
+        });
       } else {
         await ctx.send({ image: buffer, caption: text + footerNote, mentions });
       }

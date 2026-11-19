@@ -25,6 +25,7 @@ import {
   jidToNumber,
   numberToJid,
   probeDuration,
+  probeHasAudio,
   sleep,
   tmpFile,
   toJid,
@@ -535,19 +536,27 @@ export default [
     name: 'setbanner',
     aliases: ['banner', 'bannermenu'],
     category: 'owner',
-    desc: 'Cambia la imagen, GIF o video (máx. 15s) del menú.',
-    usage: 'setbanner <url | responde a imagen/gif/video | reset>',
+    desc: 'Cambia la imagen, GIF o video (máx. 20s, con sonido) del menú.',
+    usage: 'setbanner <url | responde a imagen/gif/video | reset | sonido | silencio>',
     owner: true,
     subOwner: true,
     async execute(ctx) {
       const arg = String(ctx.args[0] || '').toLowerCase();
+      const flags = (ctx.args || []).map((a) => String(a).toLowerCase());
+      const forceSound = flags.some((f) => ['sonido', 'audio', 'sound'].includes(f));
+      const forceSilent = flags.some((f) => ['silencio', 'mudo', 'gif', 'silent'].includes(f));
       if (arg === 'reset' || arg === 'delete' || arg === 'borrar') {
         if (ctx.isSubbot) {
           clearSubbotBanner(ctx.subbot.number);
-          setBotSettings(ctx.subbot, { banner: undefined, bannerType: undefined });
+          setBotSettings(ctx.subbot, {
+            banner: undefined,
+            bannerType: undefined,
+            bannerSound: undefined,
+          });
         } else {
           db().banner = null;
           db().bannerType = 'image';
+          db().bannerSound = false;
           save();
         }
         await ctx.reply(
@@ -561,7 +570,7 @@ export default [
       const media = await getBannerMedia(ctx);
       if (!media?.buffer?.length) {
         await ctx.reply(
-          `💡 *Uso:*\n▸ Responde a una *imagen*, *GIF* o *video de máximo 15s* con *${ctx.prefix}setbanner*\n▸ ${ctx.prefix}setbanner https://...\n▸ ${ctx.prefix}setbanner reset`,
+          `💡 *Uso:*\n▸ Responde a una *imagen*, *GIF* o *video de máximo 20s* con *${ctx.prefix}setbanner*\n▸ ${ctx.prefix}setbanner https://...\n▸ Agrega *sonido* o *silencio* para forzar el audio del video\n▸ ${ctx.prefix}setbanner reset`,
         );
         return;
       }
@@ -573,6 +582,7 @@ export default [
       let buffer = media.buffer;
       let kind = media.kind;
       let seconds = 0;
+      let bannerSound = false;
 
       if (kind === 'gif') {
         await ctx.reply('🎞️ Convirtiendo el GIF al formato del menú...');
@@ -584,13 +594,16 @@ export default [
         const tmp = tmpFile('mp4');
         fs.writeFileSync(tmp, buffer);
         seconds = await probeDuration(tmp);
+        const hasAudio = await probeHasAudio(tmp);
         try { fs.rmSync(tmp, { force: true }); } catch {}
-        if (seconds > 15.5) {
+        if (seconds > 20.5) {
           await ctx.reply(
-            `❌ El video dura *${seconds.toFixed(1)}s* y el máximo es *15s*.\n\nRecórtalo o envía un GIF más corto.`,
+            `❌ El video dura *${seconds.toFixed(1)}s* y el máximo es *20s*.\n\nRecórtalo o envía un video más corto.`,
           );
           return;
         }
+        // Por defecto se respeta el audio del archivo; los flags lo fuerzan.
+        bannerSound = forceSilent ? false : forceSound || hasAudio;
       }
 
       const isVideo = kind === 'video';
@@ -608,14 +621,19 @@ export default [
       setBotSettings(ctx.subbot, {
         banner: target,
         bannerType: isVideo ? 'video' : 'image',
+        bannerSound: isVideo ? bannerSound : false,
       });
 
       const botName = effectiveSettings(ctx.subbot).botName;
       const caption = isVideo
-        ? `✅ *Banner actualizado*\n\n🎬 Video/GIF${seconds ? ` de *${seconds.toFixed(1)}s*` : ''}\nAsí se verá el menú de ${botName}.`
+        ? `✅ *Banner actualizado*\n\n🎬 Video${seconds ? ` de *${seconds.toFixed(1)}s*` : ''}${bannerSound ? ' con 🔊 sonido' : ' sin sonido'}\nAsí se verá el menú de ${botName}.`
         : `✅ *Banner actualizado*\n\n🖼️ Imagen del menú de ${botName}.`;
       if (isVideo) {
-        await ctx.send({ video: buffer, gifPlayback: true, caption });
+        await ctx.send({
+          video: buffer,
+          ...(bannerSound ? {} : { gifPlayback: true }),
+          caption,
+        });
       } else {
         await ctx.send({ image: buffer, caption });
       }
@@ -2070,6 +2088,7 @@ export default [
   toggle('autoread', 'autoRead', 'Auto lectura', ['leer']),
   toggle('autoreact', 'autoReact', 'Auto reacción', ['reaccionar']),
   toggle('autostatus', 'autoStatus', 'Auto ver estados', ['verestados']),
+  toggle('setbannersound', 'bannerSound', 'Sonido en el banner de video', ['bannersound']),
   toggle('antidelete', 'antiDelete', 'Anti eliminar', ['antieliminar']),
   toggle('anticall', 'antiCall', 'Anti llamadas', ['antillamadas']),
   {
