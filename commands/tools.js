@@ -169,14 +169,17 @@ export default [
       const count = Math.min(30, Math.max(1, Number.isFinite(raw) ? raw : 10));
       const keyword = args.filter((a) => !/^\d+$/.test(a)).join(' ').trim();
 
-      await ctx.reply(
-        `🎨 *Buscando un paquete de stickers en Sticker.ly...*` +
+      await ctx.progress(
+        `🎨 *Buscando un paquete en Sticker.ly...*` +
           (keyword ? `\n▸ 🔎 ${keyword}` : '\n▸ 🎲 Búsqueda aleatoria'),
       );
 
       // 1) Intento principal: enviar el PACK completo (.wastickers).
       try {
         const { query, pack } = await collectStickerlyPack(keyword);
+        // El nombre del paquete es el de Sticker.ly; ZENITSU BOT queda como
+        // publicador, igual que en los packs que exporta el propio WhatsApp.
+        const packName = String(pack.name || 'ZENITSU BOT').slice(0, 50);
         const urls = pack.urls.slice(0, 30);
         const buffers = [];
         for (const url of urls) {
@@ -194,20 +197,27 @@ export default [
         }
         if (buffers.length >= 1) {
           const wastickers = await packFromStickerBuffers(buffers, {
-            pack: db().stickerPack || 'ZENITSU BOT',
-            author: db().stickerAuthor || 'Zenitsu',
+            pack: packName,
+            author: 'ZENITSU BOT',
           });
+          console.log(
+            `[STICKERLY] pack "${packName}" (${query}) → ${wastickers.entries.length} stickers`,
+          );
+          const safeName =
+            packName.replace(/[^\p{L}\p{N} _.-]/gu, '').trim() || 'ZENITSU BOT';
           const sent = await sendStickerPack(ctx.sock, ctx.chat, wastickers, {
             quoted: ctx.msg,
-            fileName: `${String(pack.name || 'stickers').replace(/[^\p{L}\p{N} _.-]/gu, '').trim() || 'stickers'}.wastickers`,
+            fileName: `${safeName}.wastickers`,
             caption:
-              `🎨 *PAQUETE DE STICKERS*\n\n` +
-              `▸ 🔎 ${query}\n` +
-              `▸ 📦 ${String(pack.name || 'Sticker.ly').slice(0, 50)}\n` +
+              `🎨 *${packName}*\n\n` +
+              `▸ 📦 Paquete de stickers\n` +
+              `▸ 👤 ZENITSU BOT\n` +
               `▸ 🖼️ ${wastickers.entries.length} stickers\n\n` +
               `_Toca el paquete para añadirlo a WhatsApp._`,
           });
           trackSent(sent);
+          // El mensaje de "buscando" ya no hace falta: queda solo el paquete.
+          await ctx.clearLive();
           return;
         }
       } catch (err) {
