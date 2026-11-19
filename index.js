@@ -21,7 +21,13 @@ import { startSavedSubbots } from './lib/subbots.js';
 import { botFlag } from './lib/settings.js';
 import { resumeSpamIfEnabled } from './lib/spam.js';
 import { resumeReminders } from './lib/reminders.js';
-import { buildChannelUpdate, channelAutoUpdates, refreshChannelName, sendToChannel } from './lib/channel.js';
+import {
+  buildChannelUpdate,
+  channelAutoUpdates,
+  getChannelJid,
+  refreshChannelName,
+  sendToChannel,
+} from './lib/channel.js';
 import { BOT_UPDATES, updatesId } from './lib/updates.js';
 
 globalThis.__ZENITSU_START__ = Date.now();
@@ -307,7 +313,10 @@ async function start() {
       try {
         if (!ownerNotified) {
           ownerNotified = true; // no repetir en las reconexiones
-          // Nombre del canal (para el banner "Reenviado desde..." de los mensajes).
+          // JID + nombre del canal (para el banner "Reenviado desde..." de los
+          // mensajes). Antes solo se pedía el nombre, así que si la DB no tenía
+          // el JID guardado los mensajes salían sin banner hasta más tarde.
+          getChannelJid(sock).catch(() => {});
           refreshChannelName(sock).catch(() => {});
           const prefix = db().prefix || config.prefix;
           // Actualizaciones vigentes: {prefix} se reemplaza por el prefijo real.
