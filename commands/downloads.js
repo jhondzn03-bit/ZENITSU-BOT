@@ -30,6 +30,8 @@ import {
   ytdlpDiagnostics,
   youtubeAudioBuffer,
   youtubeDownload,
+  youtubeMeta,
+  youtubeThumbnail,
   youtubeVideoBuffer,
 } from '../lib/api.js';
 import { yosoyyoBase, yosoyyoCheckKey } from '../lib/yosoyyo.js';
@@ -120,13 +122,62 @@ async function sendMediaUrl(ctx, url, caption = '', options = {}) {
   }
 }
 
-// .play / .ytmp3: descarga el audio con yt-dlp y lo envía como buffer. Así
-// no dependemos del enlace firmado de googlevideo, que a veces da 403 al
-// descargarlo desde el servidor (era la causa de que .play fallara).
-async function sendYoutubeAudio(ctx, url) {
+// Portada/banner del video. Se intenta la miniatura que viene del buscador y
+// luego la de YouTube por ID; se descarga a buffer para que WhatsApp no
+// dependa de que i.ytimg.com responda desde su IP.
+async function fetchBanner(url, preferred = '') {
+  const candidates = [...new Set([preferred, youtubeThumbnail(url)].filter((u) => /^https?:\/\//i.test(u || '')))];
+  for (const candidate of candidates) {
+    try {
+      const buffer = await fetchBuffer(
+        candidate,
+        { headers: { 'user-agent': 'Mozilla/5.0' } },
+        20000,
+      );
+      if (buffer?.length > 1000) return buffer;
+    } catch {}
+  }
+  return null;
+}
+
+// .play / .ytmp3: un ÚNICO mensaje (el banner de la canción) se va editando
+// con el progreso y termina con el título/artista. Después se manda el audio.
+// Así el bot ya no llena el chat de "Buscando...", "Descargando...", etc.
+async function sendYoutubeAudio(ctx, url, meta = {}) {
+  const banner = await fetchBanner(url, meta.thumbnail);
+  const label = meta.title ? truncate(meta.title, 90) : 'YouTube';
+  const statusText = (step) =>
+    `🎵 *${label}*\n${meta.author ? `👤 ${meta.author}\n` : ''}${step}`;
+
+  const show = async (step) => {
+    if (banner) await ctx.live({ image: banner, caption: statusText(step) });
+    else await ctx.progress(statusText(step));
+  };
+
   try {
-    const buffer = await youtubeAudioBuffer(url);
-    // yt-dlp normalmente devuelve M4A; el respaldo de la API puede dar MP3.
+    await show('⏳ *Descargando audio...*');
+
+    let buffer;
+    try {
+      buffer = await youtubeAudioBuffer(url);
+    } catch (err) {
+      console.error('[PLAY] buffer falló:', err?.message || err);
+      await show('🔄 *Reintentando con enlace directo...*');
+      const r = await youtubeDownload(url, 'audio');
+      buffer = await fetchBuffer(r.urls[0], { headers: { 'user-agent': 'Mozilla/5.0' } }, 240000);
+      if (!buffer?.length) throw new Error('el audio llegó vacío');
+    }
+
+    const info = await youtubeMeta(url);
+    const title = info.title || meta.title || 'Canción de YouTube';
+    const author = info.author || meta.author || '';
+    const caption =
+      `🎵 *${truncate(title, 120)}*\n` +
+      `${author ? `👤 ${author}\n` : ''}` +
+      `${info.duration ? `⏱️ ${info.duration} s\n` : ''}` +
+      `🔗 ${url}`;
+    await show(`✅ *Listo*\n\n${caption}`);
+
     const isM4a = buffer.length > 12 && buffer.subarray(4, 8).toString('latin1') === 'ftyp';
     // WhatsApp solo acepta audios de hasta ~16 MB como mensaje de audio. Los
     // mixes de 1-2 h llegan a 40-90 MB: se envían como documento para que no
@@ -138,7 +189,7 @@ async function sendYoutubeAudio(ctx, url) {
           document: buffer,
           mimetype: isM4a ? 'audio/mp4' : 'audio/mpeg',
           fileName: isM4a ? 'zenitsu-audio.m4a' : 'zenitsu-audio.mp3',
-          caption: '🎧 *Audio de YouTube*\n\n📎 Va como documento porque es demasiado grande para un audio normal.',
+          caption: '',
         },
         { quoted: ctx.msg },
       );
@@ -155,13 +206,11 @@ async function sendYoutubeAudio(ctx, url) {
       { quoted: ctx.msg },
     );
     trackSent(sent);
-    return;
   } catch (err) {
-    console.error('[PLAY] buffer falló:', err?.message || err);
+    await ctx.progress(
+      `❌ *No pude descargar el audio de YouTube.*\n\n_${truncate(err?.message || err, 200)}_`,
+    );
   }
-  // Respaldo: enlace directo (por si el cliente de YouTube cambia).
-  const r = await youtubeDownload(url, 'audio');
-  await sendMediaUrl(ctx, r.urls[0], '', { kind: 'audio', fileName: 'zenitsu.m4a' });
 }
 
 async function sendMany(ctx, urls, caption, options = {}) {
@@ -288,14 +337,15 @@ export default [
         return;
       }
       let url = extractUrl(query);
-      let title = '';
+      let meta = {};
       if (!url) {
         const results = await searchYouTube(query, 1);
         url = results[0].url;
-        title = results[0].title;
+        meta = results[0] || {};
       }
-      await ctx.reply(`🔎 *Buscando:* ${truncate(title || url, 200)}\n\n_Espera un momento..._`);
-      await sendYoutubeAudio(ctx, url);
+      // El banner y el progreso los maneja sendYoutubeAudio en un solo
+      // mensaje editado; aquí no se manda ningún texto extra.
+      await sendYoutubeAudio(ctx, url, meta);
     },
   },
   {
@@ -310,7 +360,6 @@ export default [
         await ctx.reply(`💡 Uso: *${ctx.prefix}ytmp3* https://youtu.be/...`);
         return;
       }
-      await ctx.reply('🎧 *Descargando audio...*');
       await sendYoutubeAudio(ctx, url);
     },
   },
@@ -326,12 +375,19 @@ export default [
         await ctx.reply(`💡 Uso: *${ctx.prefix}ytmp4* https://youtu.be/...`);
         return;
       }
-      await ctx.reply('🎬 *Descargando video...*');
+      const banner = await fetchBanner(url);
+      const status = async (text) => {
+        if (banner) await ctx.live({ image: banner, caption: text });
+        else await ctx.progress(text);
+      };
       const captionFor = (r) =>
         `🎬 *${truncate(r.title || 'Video de YouTube', 200)}*\n${r.author ? `👤 ${r.author}\n` : ''}${r.duration ? `⏱️ ${r.duration}\n` : ''}🔗 ${url}`;
+      await status('🎬 *Descargando video...*');
       try {
         const r = await youtubeDownload(url, 'video');
-        await sendMediaUrl(ctx, r.urls[0], captionFor(r), { kind: 'video' });
+        const caption = captionFor(r);
+        await status(`✅ *Listo*\n\n${caption}`);
+        await sendMediaUrl(ctx, r.urls[0], caption, { kind: 'video' });
         return;
       } catch (err) {
         console.error('[YTMP4] El enlace directo falló, probando descarga completa:', err?.message || err);
@@ -344,7 +400,9 @@ export default [
           `El video pesa ${formatBytes(video.buffer.length)} y supera el límite (${formatBytes(config.maxFileSize)}).\n\n💡 Prueba con *${ctx.prefix}ytdoc* para recibirlo como documento.`,
         );
       }
-      await ctx.send({ video: video.buffer, caption: captionFor(video), mimetype: 'video/mp4' });
+      const caption = captionFor(video);
+      await status(`✅ *Listo*\n\n${caption}`);
+      await ctx.send({ video: video.buffer, caption, mimetype: 'video/mp4' });
     },
   },
   {
@@ -373,16 +431,18 @@ export default [
           return;
         }
         const chosen = last.results[index - 1];
-        await ctx.reply(
+        const banner = await fetchBanner(chosen.url, chosen.thumbnail);
+        const status = async (text) => {
+          if (banner) await ctx.live({ image: banner, caption: text });
+          else await ctx.progress(text);
+        };
+        await status(
           `🎬 Descargando el resultado ${index}/${last.results.length}:\n*${truncate(chosen.title, 80)}*\n\n_Espera un momento..._`,
         );
         const r = await youtubeDownload(chosen.url, 'video');
-        await sendMediaUrl(
-          ctx,
-          r.urls[0],
-          `🎬 *${truncate(chosen.title, 200)}*\n${chosen.author ? `👤 ${chosen.author}\n` : ''}${chosen.duration ? `⏱️ ${chosen.duration}\n` : ''}🔗 ${chosen.url}`,
-          { kind: 'video' },
-        );
+        const caption = `🎬 *${truncate(chosen.title, 200)}*\n${chosen.author ? `👤 ${chosen.author}\n` : ''}${chosen.duration ? `⏱️ ${chosen.duration}\n` : ''}🔗 ${chosen.url}`;
+        await status(`✅ *Listo*\n\n${caption}`);
+        await sendMediaUrl(ctx, r.urls[0], caption, { kind: 'video' });
         return;
       }
 
@@ -432,7 +492,7 @@ export default [
           return;
         }
         const chosen = last.results[index - 1];
-        await ctx.reply(
+        await ctx.progress(
           `🎵 Descargando el resultado ${index}/${last.results.length}:\n*${truncate(chosen.title, 80)}*\n\n_Espera un momento..._`,
         );
         const r = await tiktokDownload(chosen.url);
@@ -474,7 +534,7 @@ export default [
         await ctx.reply(`💡 Uso: *${ctx.prefix}tiktok* https://vm.tiktok.com/...`);
         return;
       }
-      await ctx.reply('🎵 *Descargando TikTok...*');
+      await ctx.progress('🎵 *Descargando TikTok...*');
       const r = await tiktokDownload(url);
       const caption = `🎵 *${truncate(r.title || 'TikTok', 200)}*\n${r.author ? `👤 ${r.author}\n` : ''}🔗 ${url}`;
       if (r.images?.length) {
@@ -503,13 +563,13 @@ export default [
       const numberArg = [...ctx.args].reverse().find((a) => /^\d{1,3}$/.test(a));
       // Sin número = TODOS los stickers del video.
       const max = numberArg ? Math.min(200, Math.max(1, Number(numberArg))) : 0;
-      await ctx.reply(
+      await ctx.progress(
         '🔎 *Buscando TODOS los stickers en los comentarios...*\n\n' +
           '_Reviso comentarios y respuestas; puede tardar un poco._',
       );
       const res = await tiktokCommentStickers(link, { max });
       if (!res.stickers.length) {
-        await ctx.reply(
+        await ctx.progress(
           `😕 *No encontré stickers ni fotos en los comentarios.*\n\n` +
             `▸ Comentarios revisados: *${res.scanned}*\n` +
             `▸ Hilos revisados: *${res.threads}*\n\n` +
@@ -517,7 +577,7 @@ export default [
         );
         return;
       }
-      await ctx.reply(
+      await ctx.progress(
         `🎨 *STICKERS ENCONTRADOS*\n\n` +
           `▸ Video: *${res.videoId}*\n` +
           `▸ Comentarios revisados: *${res.scanned}*\n` +
@@ -554,7 +614,7 @@ export default [
         }
       }
       if (!sent) throw new Error('No pude convertir ningún sticker de ese video');
-      await ctx.reply(`✅ Envié *${sent}* de *${res.stickers.length}* stickers encontrados. ⚡`);
+      await ctx.progress(`✅ Envié *${sent}* de *${res.stickers.length}* stickers encontrados. ⚡`);
     },
   },
   {
@@ -565,7 +625,7 @@ export default [
     usage: 'playdiag',
     owner: true,
     async execute(ctx) {
-      await ctx.reply('🩺 *Diagnóstico de descargas...*\n\n_Puede tardar un minuto._');
+      await ctx.progress('🩺 *Diagnóstico de descargas...*\n\n_Puede tardar un minuto._');
       const lines = [`⚙️ Node: *${process.version}* · ${process.platform}/${process.arch}`];
       try {
         const diag = await ytdlpDiagnostics();
@@ -650,7 +710,7 @@ export default [
             'Sube cookies con *.setcookies* o configura la key de YO SOY YO.',
         );
       }
-      await ctx.reply(lines.join('\n'));
+      await ctx.progress(lines.join('\n'));
     },
   },
   {
@@ -665,7 +725,7 @@ export default [
         await ctx.reply(`💡 Uso: *${ctx.prefix}instagram* https://www.instagram.com/p/...`);
         return;
       }
-      await ctx.reply('📸 *Descargando Instagram...*');
+      await ctx.progress('📸 *Descargando Instagram...*');
       const r = await instagramDownload(url);
       await sendMany(ctx, r.urls, `📸 *Instagram*\n${r.title ? `📝 ${truncate(r.title, 150)}\n` : ''}🔗 ${url}`);
     },
@@ -682,7 +742,7 @@ export default [
         await ctx.reply(`💡 Uso: *${ctx.prefix}facebook* https://www.facebook.com/...`);
         return;
       }
-      await ctx.reply('📘 *Descargando Facebook...*');
+      await ctx.progress('📘 *Descargando Facebook...*');
       const r = await facebookDownload(url);
       await sendMany(ctx, r.urls, `📘 *Facebook*\n${r.title ? `📝 ${truncate(r.title, 150)}\n` : ''}🔗 ${url}`, { kind: 'video' });
     },
@@ -699,7 +759,7 @@ export default [
         await ctx.reply(`💡 Uso: *${ctx.prefix}twitter* https://x.com/...`);
         return;
       }
-      await ctx.reply('🐦 *Descargando de X/Twitter...*');
+      await ctx.progress('🐦 *Descargando de X/Twitter...*');
       const r = await twitterDownload(url);
       await sendMany(ctx, r.urls, `🐦 *X/Twitter*\n${r.title ? `📝 ${truncate(r.title, 150)}\n` : ''}🔗 ${url}`);
     },
@@ -724,15 +784,15 @@ export default [
       // Si hay enlace, es una descarga; si no, una búsqueda por texto.
       const url = extractUrl(text) || (isUrl(ctx.args[0]) ? ctx.args[0] : '');
       if (url) {
-        await ctx.reply('📌 *Descargando de Pinterest...*');
+        await ctx.progress('📌 *Descargando de Pinterest...*');
         const r = await pinterestDownload(url);
         await sendMany(ctx, r.urls, `📌 *Pinterest*\n🔗 ${url}`);
         return;
       }
 
-      await ctx.reply(`🔍 *Buscando "${truncate(text, 60)}" en Pinterest...*`);
+      await ctx.progress(`🔍 *Buscando "${truncate(text, 60)}" en Pinterest...*`);
       const results = await pinterestSearch(text, 30);
-      await ctx.reply(`📌 *${results.length} imágenes encontradas.* Enviando el álbum...`);
+      await ctx.progress(`📌 *${results.length} imágenes encontradas.* Enviando el álbum...`);
       await sendImageAlbum(
         ctx,
         results,
@@ -752,7 +812,7 @@ export default [
         await ctx.reply(`💡 Uso: *${ctx.prefix}spotify* https://open.spotify.com/track/...`);
         return;
       }
-      await ctx.reply('🎧 *Descargando de Spotify...*');
+      await ctx.progress('🎧 *Descargando de Spotify...*');
       const r = await spotifyDownload(url);
       await sendMediaUrl(ctx, r.urls[0], `🎧 *Spotify*\n${r.title ? `🎵 ${truncate(r.title, 150)}\n` : ''}🔗 ${url}`, {
         kind: 'audio',
@@ -772,7 +832,7 @@ export default [
         await ctx.reply(`💡 Uso: *${ctx.prefix}mediafire* https://www.mediafire.com/file/...`);
         return;
       }
-      await ctx.reply('📦 *Descargando de MediaFire...*');
+      await ctx.progress('📦 *Descargando de MediaFire...*');
       const r = await mediafireDownload(url);
       const buffer = await fetchBuffer(r.urls[0]);
       if (buffer.length > config.maxFileSize) {
@@ -799,19 +859,26 @@ export default [
         await ctx.reply(`💡 Uso: *${ctx.prefix}ytdoc* https://youtu.be/...`);
         return;
       }
-      await ctx.reply('📁 *Descargando video como documento...*');
+      const banner = await fetchBanner(url);
+      const status = async (text) => {
+        if (banner) await ctx.live({ image: banner, caption: text });
+        else await ctx.progress(text);
+      };
+      await status('📁 *Descargando video como documento...*');
       const r = await youtubeVideoBuffer(url);
       const buffer = r.buffer;
       if (buffer.length > config.maxFileSize) {
-        await ctx.reply(`⚠️ El video pesa *${formatBytes(buffer.length)}* y supera el límite (${formatBytes(config.maxFileSize)}).\n\n💡 Prueba con *${ctx.prefix}ytmp4* (calidad más liviana).`);
+        await status(`⚠️ El video pesa *${formatBytes(buffer.length)}* y supera el límite (${formatBytes(config.maxFileSize)}).\n\n💡 Prueba con *${ctx.prefix}ytmp4* (calidad más liviana).`);
         return;
       }
       const name = (r.title || 'video').replace(/[^\w.\- ]+/g, '_').slice(0, 80);
+      const caption = `📁 *${truncate(r.title || 'Video de YouTube', 200)}*\n${r.author ? `👤 ${r.author}\n` : ''}${r.duration ? `⏱️ ${r.duration}\n` : ''}🔗 ${url}`;
+      await status(`✅ *Listo*\n\n${caption}`);
       await ctx.send({
         document: buffer,
         fileName: `${name}.mp4`,
         mimetype: 'video/mp4',
-        caption: `📁 *${truncate(r.title || 'Video de YouTube', 200)}*\n${r.author ? `👤 ${r.author}\n` : ''}${r.duration ? `⏱️ ${r.duration}\n` : ''}🔗 ${url}`,
+        caption,
       });
     },
   },
@@ -827,7 +894,7 @@ export default [
         await ctx.reply(`💡 Uso: *${ctx.prefix}tiktokaudio* https://vm.tikTok.com/...`);
         return;
       }
-      await ctx.reply('🎵 *Extrayendo el audio...*');
+      await ctx.progress('🎵 *Extrayendo el audio...*');
       const r = await tiktokDownload(url);
       const music = r.audio || r.music || r.musicUrl;
       if (!music) throw new Error('No encontré el audio de ese TikTok');
@@ -852,7 +919,7 @@ export default [
         return;
       }
       const [, user, repo] = match;
-      await ctx.reply('📦 *Clonando el repositorio...*');
+      await ctx.progress('📦 *Clonando el repositorio...*');
       const zipUrl = `https://codeload.github.com/${user}/${repo}/zip/refs/heads/main`;
       let buffer;
       try {
@@ -881,7 +948,7 @@ export default [
     async execute(ctx) {
       const query = ctx.text.trim();
       if (!query) return ctx.reply(`💡 Uso: *${ctx.prefix}wallpaper* anime samurai`);
-      await ctx.reply('🖼️ *Buscando fondos de pantalla...*');
+      await ctx.progress('🖼️ *Buscando fondos de pantalla...*');
       const walls = await wallpaperSearch(query, 3);
       let sent = 0;
       for (const w of walls) {

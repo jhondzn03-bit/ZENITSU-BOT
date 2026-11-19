@@ -220,6 +220,38 @@ async function makeContext(sock, msg, m, extra = {}) {
     return send({ text: withWatermark(themed), ...content }, options);
   };
 
+  // Mensaje "vivo": un solo mensaje que se va EDITANDO en cada paso en vez de
+  // mandar uno nuevo por cada aviso de descarga. Si WhatsApp no permite
+  // editar (mensaje borrado, demasiado viejo, etc.) se manda uno nuevo.
+  let liveKey = null;
+  const live = async (content = {}, options = {}) => {
+    const prepared = watermarkContent({ ...content });
+    if (liveKey) {
+      try {
+        const sent = await sock.sendMessage(m.chat, { ...prepared, edit: liveKey }, { ...options });
+        trackSent(sent);
+        return sent;
+      } catch {
+        liveKey = null;
+      }
+    }
+    const sent = await sock.sendMessage(m.chat, prepared, { quoted: msg, ...options });
+    trackSent(sent);
+    liveKey = sent?.key || null;
+    return sent;
+  };
+
+  const progress = (text) => live({ text });
+
+  const clearLive = async () => {
+    if (!liveKey) return;
+    const key = liveKey;
+    liveKey = null;
+    try {
+      await sock.sendMessage(m.chat, { delete: key });
+    } catch {}
+  };
+
   const react = async (emoji, key = m.key) => {
     try {
       const sent = await sock.sendMessage(m.chat, { react: { text: emoji, key } });
@@ -289,6 +321,9 @@ async function makeContext(sock, msg, m, extra = {}) {
     quotedSender: m.quotedSender,
     reply,
     send,
+    live,
+    progress,
+    clearLive,
     react,
     downloadMedia,
     downloadQuoted,
