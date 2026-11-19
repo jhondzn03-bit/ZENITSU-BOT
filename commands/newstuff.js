@@ -268,7 +268,9 @@ export default [
         const item = sendCollectionByName(name, ctx.sender);
         await ctx.reply(
           item
-            ? `✅ Colección *${item.name}* publicada con *${item.links.length}* links.`
+            ? item.collectionLink
+              ? `✅ Colección *${item.name}* publicada como un solo enlace de TikTok.`
+              : `✅ Colección *${item.name}* publicada con *${item.links.length}* links.`
             : `❌ No encontré una colección abierta llamada *${name}*. Revisa con *${ctx.prefix}coleccion list*.`,
         );
         return;
@@ -278,6 +280,7 @@ export default [
         await ctx.reply(
           `🎬 *COLECCIONES DE TIKTOK*\n\n` +
             `▸ *${ctx.prefix}coleccion SNNLPPY* — abre la colección y ve pegando links de TikTok\n` +
+            `▸ Si pegas un LINK DE COLECCIÓN de TikTok (como vt.tiktok.com/...), a la hora se publica SOLO ese enlace con todos los videos juntos\n` +
             `▸ *${ctx.prefix}coleccion SNNLPPY 6:00PM MX* — se publica sola a esa hora (MX = México)\n` +
             `▸ *${ctx.prefix}coleccion enviar SNNLPPY* — publícala ya\n` +
             `▸ *${ctx.prefix}coleccion list* — ver tus colecciones\n` +
@@ -315,6 +318,7 @@ export default [
       await ctx.reply(
         `✅ *COLECCIÓN ABIERTA: ${item.name}*\n\n` +
           `▸ Ahora ve enviando los links de TikTok, uno por uno.\n` +
+          `▸ Si mandas un link de COLECCIÓN de TikTok, se publica solo ese enlace.\n` +
           (item.scheduledAt
             ? `▸ 🕐 Se publica sola a las *${item.scheduleLabel}*.\n`
             : `▸ Cuando termines: *${ctx.prefix}coleccion enviar ${item.name}*.\n`) +
