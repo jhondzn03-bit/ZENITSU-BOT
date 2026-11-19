@@ -20,6 +20,7 @@ import { trackSent, wasSent, getGroupMetadata } from '../lib/state.js';
 import { findParticipant } from '../lib/targets.js';
 import { handleCustomCommand } from '../lib/customcmd.js';
 import { captureCollectionLink, hasActiveCollection } from '../lib/collections.js';
+import { captureScriptReply } from '../lib/roblox-script.js';
 import { decorateText } from '../lib/theme.js';
 import { aiText } from '../lib/api.js';
 import { botFlag, effectiveSettings, subbotForSock } from '../lib/settings.js';
@@ -696,6 +697,13 @@ export async function handleMessage(sock, msg) {
   }
 
   if (!isCommand) {
+    // Una conversación de .crearscript tiene prioridad: sus respuestas son
+    // texto normal y no deben caer en la IA automática del chat.
+    try {
+      if (await captureScriptReply(ctx, m)) return;
+    } catch (err) {
+      console.error('[CREARSCRIPT] al capturar respuesta:', err?.message || err);
+    }
     // Si hay una colección de TikTok abierta, los links van para ella en vez
     // de caer en la IA automática.
     try {

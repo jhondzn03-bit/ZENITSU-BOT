@@ -13,6 +13,7 @@ import extra from './extra.js';
 import spam from './spam.js';
 import newstuff from './newstuff.js';
 import delta from './delta.js';
+import robloxscript from './robloxscript.js';
 import channel from './channel.js';
 import opencode from './opencode.js';
 import customcmd from './customcmd.js';
@@ -20,7 +21,7 @@ import search from './search.js';
 import media from './media.js';
 import nsfwplus from './nsfwplus.js';
 
-const modules = [general, event, owner, admin, tools, downloads, ai, anime, fun, economy, info, extra, spam, newstuff, delta, channel, opencode, customcmd, search, media, nsfwplus];
+const modules = [general, event, owner, admin, tools, downloads, ai, anime, fun, economy, info, extra, spam, newstuff, delta, robloxscript, channel, opencode, customcmd, search, media, nsfwplus];
 
 export const commands = modules.flat().filter((c) => c && c.name);
 
