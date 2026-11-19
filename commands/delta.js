@@ -1,45 +1,82 @@
-import { withWatermark } from '../lib/utils.js';
+import { sleep, withWatermark } from '../lib/utils.js';
 import {
   addDeltaDomain,
   allowedDeltaDomains,
+  allowedPlatoboostDomains,
+  checkPlatoboostKey,
+  clearPlatoboostEndpoint,
+  getPlatoboostEndpoint,
   inspectDeltaLink,
+  parseAllowedHttpsUrl,
   removeDeltaDomain,
   setDeltaDomains,
+  setPlatoboostEndpoint,
 } from '../lib/delta.js';
 
 const SIGN = '>  ByJhon!';
 
-function successText(result) {
-  const lines = [
-    '🔑 *DELTA KEY*',
-    `🔗 Estado: ${result.status}`,
-    `🔐 Key: ${result.key || '(aún no disponible)'}`,
+const REASON = {
+  'not-configured': 'no hay un endpoint oficial de Platoboost configurado',
+  'invalid-endpoint': 'el endpoint no está en la lista de dominios autorizados',
+  timeout: 'se agotó el tiempo de espera (12 s)',
+  network: 'sin conexión con Platoboost',
+  'redirect-blocked': 'la redirección sale del dominio oficial de Platoboost',
+  'verification-required': 'Platoboost pide completar su verificación oficial (CAPTCHA/anuncios)',
+  'no-key': 'la interfaz oficial no devolvió ninguna clave',
+};
+
+function reasonText(result) {
+  if (result.reason === 'network') return `${REASON.network} (${result.detail || 'error de red'})`;
+  if (result.reason === 'http') return result.detail || `HTTP ${result.status}`;
+  if (result.reason === 'no-key') return REASON['no-key'];
+  return REASON[result.reason] || result.detail || 'error desconocido';
+}
+
+function finalText(result, isOwner) {
+  const lines = ['🔑 *DELTA KEY*'];
+  if (result.ok) {
+    lines.push('🔗 Estado: Completada', `🔐 Key: ${result.key}`);
+  } else {
+    lines.push('🔗 Estado: Verificación');
+    lines.push(`🔐 Key: (sin resultado: ${reasonText(result)})`);
+  }
+  lines.push(
     '',
-    '📋 *CÓMO COMPLETAR LA VERIFICACIÓN OFICIAL*',
-    '1️⃣ Abre el enlace oficial en tu navegador (usa el enlace que me enviaste).',
-    '2️⃣ Completa TÚ la verificación de esa página: CAPTCHA, anuncios obligatorios y controles de acceso.',
-    '3️⃣ Cuando el sitio te muestre la clave, cópiala desde la página oficial.',
-  ];
-  if (result.protected && !result.key) {
-    lines.push('', '⚠️ El sitio tiene una protección de acceso activa. El bot NO la salta: haz la verificación en tu navegador.');
+    '📋 *CÓMO CONTINUAR*',
+    '▸ Abre el enlace oficial de Platoboost/Delta en tu navegador.',
+    '▸ Completa TÚ la verificación: CAPTCHA, anuncios obligatorios y controles de acceso.',
+    '▸ Copia la clave que te entregue el sitio oficial. El bot NO la inventa ni la simula.',
+  );
+  if (!isOwner && result.reason === 'not-configured') {
+    lines.push('▸ Pídele al owner que configure el endpoint con *.delta endpoint <url>*.');
+  }
+  if (isOwner && result.reason === 'not-configured') {
+    lines.push('▸ Owner: configura el endpoint con *.delta endpoint <url>*.');
   }
   lines.push('', SIGN);
-  return withWatermark(lines.join('\n'));
+  return lines.join('\n');
 }
 
 function invalidText(domains) {
-  return withWatermark(
-    [
-      '❌ *ENLACE NO VÁLIDO*',
-      '',
-      'Solo acepto enlaces HTTPS de los dominios oficiales de Delta Executor:',
-      ...domains.map((d) => `▸ ${d}`),
-      '',
-      'Ejemplo: *.delta https://delta.app/...*',
-      '',
-      SIGN,
-    ].join('\n'),
-  );
+  return [
+    '❌ *ENLACE NO VÁLIDO*',
+    '',
+    'Solo acepto enlaces HTTPS de dominios oficiales:',
+    ...domains.map((d) => `▸ ${d}`),
+    '',
+    SIGN,
+  ].join('\n');
+}
+
+async function runStages(ctx, endpoint) {
+  await ctx.live({ text: '⚡ Conectando con los servidores de Platoboost...' });
+  await sleep(350);
+  await ctx.progress('🔎 Verificando solicitud...');
+  await sleep(350);
+  await ctx.progress('⚡ Procesando enlace de Delta...');
+  await sleep(350);
+  await ctx.progress('🔑 Consultando disponibilidad de la KEY...');
+  return checkPlatoboostKey(endpoint);
 }
 
 export default [
@@ -47,54 +84,94 @@ export default [
     name: 'delta',
     aliases: ['deltakey', 'verificardelta'],
     category: 'tools',
-    desc: 'Revisa un enlace oficial de verificación de Delta Executor y devuelve la clave si la página pública la muestra.',
-    usage: 'delta <link oficial>',
+    desc: 'Consulta la KEY de Delta Executor mediante la interfaz oficial autorizada de Platoboost.',
+    usage: 'delta | delta <link oficial> | delta endpoint <url> (owner)',
     async execute(ctx) {
+      const isOwner = Boolean(ctx.isOwner || ctx.isGlobalOwner);
+      const first = String(ctx.args[0] || '').toLowerCase();
       const raw = ctx.args.join(' ').trim();
-      if (!raw) {
-        await ctx.reply(
-          withWatermark(
-            [
-              '🔑 *DELTA KEY*',
-              '',
-              'Uso: *.delta <link oficial de verificación>*',
-              '',
-              'El bot solo abre la página públicamente, comprueba el estado y muestra la clave SI el sitio oficial la expone. No pide datos privados y no salta CAPTCHA ni anuncios.',
-              '',
-              SIGN,
-            ].join('\n'),
-          ),
-        );
-        return;
-      }
 
-      const domains = allowedDeltaDomains();
-      let result;
-      try {
-        result = await inspectDeltaLink(raw, domains);
-      } catch (err) {
-        await ctx.reply(
-          withWatermark(
-            `⚠️ No pude comprobar el enlace: ${err?.message || 'error desconocido'}\n\n${SIGN}`,
-          ),
-        );
-        return;
-      }
-
-      if (!result.ok) {
-        if (result.reason === 'network') {
+      // ── Configuración del endpoint autorizado (solo owner) ───────────────
+      if (first === 'endpoint' || first === 'api') {
+        const value = ctx.args.slice(1).join(' ').trim();
+        if (!isOwner) {
+          await ctx.reply('🛡️ Solo el owner puede configurar el endpoint de Platoboost.');
+          return;
+        }
+        if (!value || first === 'api') {
+          const current = getPlatoboostEndpoint();
           await ctx.reply(
-            withWatermark(
-              `⚠️ No pude abrir la página oficial (${result.detail || 'sin conexión'}).\n\nIntenta de nuevo en unos segundos.\n\n${SIGN}`,
-            ),
+            [
+              '🌐 *ENDPOINT DE PLATOBOOST*',
+              '',
+              `▸ Actual: ${current || '(sin configurar)'}`,
+              `▸ Dominios permitidos: ${allowedPlatoboostDomains().join(', ')}`,
+              '',
+              '▸ *.delta endpoint <https://...>* — guardar',
+              '▸ *.delta endpoint off* — quitar',
+            ].join('\n'),
           );
           return;
         }
-        await ctx.reply(invalidText(domains));
+        if (value === 'off' || value === 'reset') {
+          clearPlatoboostEndpoint();
+          await ctx.reply('♻️ Endpoint de Platoboost quitado.');
+          return;
+        }
+        const saved = setPlatoboostEndpoint(value);
+        await ctx.reply(
+          saved
+            ? `✅ Endpoint guardado: ${saved}\n\nEl bot solo hará peticiones GET a ese dominio autorizado.`
+            : `❌ Endpoint no permitido. Debe ser HTTPS y estar en: ${allowedPlatoboostDomains().join(', ')}`,
+        );
         return;
       }
 
-      await ctx.reply(successText(result));
+      // ── Modo con link: compatible con la versión anterior ───────────────
+      if (raw) {
+        const platoboost = parseAllowedHttpsUrl(raw, allowedPlatoboostDomains());
+        if (platoboost) {
+          const result = await runStages(ctx, platoboost.url);
+          await ctx.progress(finalText(result, isOwner));
+          return;
+        }
+        const domains = allowedDeltaDomains();
+        const parsed = parseAllowedHttpsUrl(raw, domains);
+        if (!parsed) {
+          await ctx.reply(invalidText([...domains, ...allowedPlatoboostDomains()]));
+          return;
+        }
+        let result;
+        try {
+          result = await inspectDeltaLink(parsed.url, domains);
+        } catch (err) {
+          await ctx.reply(`⚠️ No pude comprobar el enlace: ${err?.message || 'error desconocido'}`);
+          return;
+        }
+        if (result.ok && result.key) {
+          await ctx.reply(
+            ['🔑 *DELTA KEY*', '🔗 Estado: Completada', `🔐 Key: ${result.key}`, '', SIGN].join('\n'),
+          );
+        } else {
+          await ctx.reply(
+            [
+              '🔑 *DELTA KEY*',
+              '🔗 Estado: Verificación',
+              '🔐 Key: (aún no disponible)',
+              '',
+              '▸ Completa la verificación oficial en el enlace y vuelve a consultar.',
+              '',
+              SIGN,
+            ].join('\n'),
+          );
+        }
+        return;
+      }
+
+      // ── Flujo normal: .delta sin argumentos ──────────────────────────────
+      const endpoint = getPlatoboostEndpoint();
+      const result = await runStages(ctx, endpoint);
+      await ctx.progress(finalText(result, isOwner));
     },
   },
   {
