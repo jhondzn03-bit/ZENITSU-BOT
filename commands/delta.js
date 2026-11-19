@@ -1,4 +1,4 @@
-import { sleep, withWatermark } from '../lib/utils.js';
+import { sleep } from '../lib/utils.js';
 import {
   addDeltaDomain,
   allowedDeltaDomains,
@@ -8,12 +8,29 @@ import {
   getPlatoboostEndpoint,
   inspectDeltaLink,
   parseAllowedHttpsUrl,
+  parseAuthPlatoRelayUrl,
   removeDeltaDomain,
   setDeltaDomains,
   setPlatoboostEndpoint,
 } from '../lib/delta.js';
 
 const SIGN = '>  ByJhon!';
+
+const NO_LINK =
+  '❌ Envía un link de Delta.\nEjemplo: ".delta https://auth.platorelay.com/..."';
+const INVALID_LINK =
+  '❌ Enlace inválido. Solo acepto enlaces HTTPS de auth.platorelay.com.\n' +
+  'Ejemplo: ".delta https://auth.platorelay.com/a?d=..."';
+
+function keyBox(value) {
+  return [
+    '╭━[🔓 𝐃𝐄𝐋𝐓𝐀 𝐊𝐄𝐘 🔓]━╮',
+    '┃',
+    '┃ 🔑 Resultado:',
+    `┃ ${value}`,
+    '╰━━━━━━━━━━━━━━━╯',
+  ].join('\n');
+}
 
 const REASON = {
   'not-configured': 'no hay un endpoint oficial de Platoboost configurado',
@@ -127,51 +144,51 @@ export default [
         return;
       }
 
-      // ── Modo con link: compatible con la versión anterior ───────────────
-      if (raw) {
-        const platoboost = parseAllowedHttpsUrl(raw, allowedPlatoboostDomains());
-        if (platoboost) {
-          const result = await runStages(ctx, platoboost.url);
-          await ctx.progress(finalText(result, isOwner));
-          return;
-        }
-        const domains = allowedDeltaDomains();
-        const parsed = parseAllowedHttpsUrl(raw, domains);
-        if (!parsed) {
-          await ctx.reply(invalidText([...domains, ...allowedPlatoboostDomains()]));
-          return;
-        }
-        let result;
-        try {
-          result = await inspectDeltaLink(parsed.url, domains);
-        } catch (err) {
-          await ctx.reply(`⚠️ No pude comprobar el enlace: ${err?.message || 'error desconocido'}`);
-          return;
-        }
-        if (result.ok && result.key) {
-          await ctx.reply(
-            ['🔑 *DELTA KEY*', '🔗 Estado: Completada', `🔐 Key: ${result.key}`, '', SIGN].join('\n'),
-          );
-        } else {
-          await ctx.reply(
-            [
-              '🔑 *DELTA KEY*',
-              '🔗 Estado: Verificación',
-              '🔐 Key: (aún no disponible)',
-              '',
-              '▸ Completa la verificación oficial en el enlace y vuelve a consultar.',
-              '',
-              SIGN,
-            ].join('\n'),
-          );
-        }
+      // ── Flujo principal: .delta https://auth.platorelay.com/a?d=... ──────
+      if (!raw) {
+        await ctx.send({ text: NO_LINK });
         return;
       }
 
-      // ── Flujo normal: .delta sin argumentos ──────────────────────────────
-      const endpoint = getPlatoboostEndpoint();
-      const result = await runStages(ctx, endpoint);
-      await ctx.progress(finalText(result, isOwner));
+      const relay = parseAuthPlatoRelayUrl(raw);
+      if (relay) {
+        let result;
+        try {
+          result = await checkPlatoboostKey(relay.url);
+        } catch (err) {
+          await ctx.send({ text: keyBox(`❌ Error: ${err?.message || "error desconocido"}`) });
+          return;
+        }
+        await ctx.send({
+          text: keyBox(result.ok ? `"${result.key}"` : `❌ ${reasonText(result)}`),
+        });
+        return;
+      }
+
+      // Compatibilidad con los formatos de .delta de versiones anteriores.
+      const legacyDomains = allowedPlatoboostDomains().filter((d) => d !== "auth.platorelay.com");
+      const platoboost = parseAllowedHttpsUrl(raw, legacyDomains);
+      if (platoboost) {
+        const result = await runStages(ctx, platoboost.url);
+        await ctx.progress(finalText(result, isOwner));
+        return;
+      }
+      const domains = allowedDeltaDomains();
+      const parsed = parseAllowedHttpsUrl(raw, domains);
+      if (!parsed) {
+        await ctx.send({ text: INVALID_LINK });
+        return;
+      }
+      let result;
+      try {
+        result = await inspectDeltaLink(parsed.url, domains);
+      } catch (err) {
+        await ctx.send({ text: keyBox(`❌ ${err?.message || "error desconocido"}`) });
+        return;
+      }
+      await ctx.send({
+        text: result.ok && result.key ? keyBox(`"${result.key}"`) : keyBox(`❌ ${reasonText(result)}`),
+      });
     },
   },
   {
