@@ -40,7 +40,6 @@ import { sendButtons } from '../lib/buttons.js';
 import { audioToVoiceNote, mediaToAudio, mediaToSticker, stickerToImage } from '../lib/sticker.js';
 import { sendStickerBatch } from '../lib/stickers.js';
 import { collectStickerlyPack, collectStickerlyStickers } from '../lib/stickerly.js';
-import { packFromStickerBuffers, sendStickerPack } from '../lib/stickerpack.js';
 import { trackSent } from '../lib/state.js';
 
 const LANG_NAMES = {
@@ -170,54 +169,52 @@ export default [
       const keyword = args.filter((a) => !/^\d+$/.test(a)).join(' ').trim();
 
       await ctx.progress(
-        `🎨 *Buscando un paquete en Sticker.ly...*` +
+        `🎨 *Preparando stickers de Sticker.ly...*` +
           (keyword ? `\n▸ 🔎 ${keyword}` : '\n▸ 🎲 Búsqueda aleatoria'),
       );
 
-      // 1) Intento principal: enviar el PACK completo (.wastickers).
+      // Un .wastickers enviado como documento NO lo renderiza WhatsApp: llega
+      // como archivo y los stickers no se ven. Lo que sí se ve siempre es un
+      // sticker real. Todos los del pack llevan el MISMO nombre e ID en sus
+      // metadatos, así WhatsApp los agrupa en el cajón de stickers bajo ese
+      // nombre (pack) y además se muestran uno por uno en el chat.
       try {
         const { query, pack } = await collectStickerlyPack(keyword);
-        // El nombre del paquete es el de Sticker.ly; ZENITSU BOT queda como
-        // publicador, igual que en los packs que exporta el propio WhatsApp.
         const packName = String(pack.name || 'ZENITSU BOT').slice(0, 50);
-        const urls = pack.urls.slice(0, 30);
-        const buffers = [];
-        for (const url of urls) {
+        const wanted = Math.min(30, Math.max(1, count));
+        let sentCount = 0;
+        let failed = 0;
+        for (const url of pack.urls.slice(0, wanted)) {
           try {
             const buffer = await fetchBuffer(
               url,
               { headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://sticker.ly/' } },
               45000,
             );
-            if (buffer?.length) buffers.push(buffer);
-          } catch {
-            // Un sticker caído no debe tumbar el paquete.
+            if (!buffer?.length) continue;
+            const webp = await mediaToSticker(buffer, {
+              isVideo: false,
+              pack: packName,
+              author: 'ZENITSU BOT',
+            });
+            const msg = await ctx.sock.sendMessage(ctx.chat, { sticker: webp });
+            if (msg?.key?.id) {
+              sentCount++;
+              trackSent(msg);
+            } else failed++;
+          } catch (err) {
+            failed++;
           }
-          if (buffers.length >= 30) break;
         }
-        if (buffers.length >= 1) {
-          const wastickers = await packFromStickerBuffers(buffers, {
-            pack: packName,
-            author: 'ZENITSU BOT',
-          });
-          console.log(
-            `[STICKERLY] pack "${packName}" (${query}) → ${wastickers.entries.length} stickers`,
-          );
-          const safeName =
-            packName.replace(/[^\p{L}\p{N} _.-]/gu, '').trim() || 'ZENITSU BOT';
-          const sent = await sendStickerPack(ctx.sock, ctx.chat, wastickers, {
-            quoted: ctx.msg,
-            fileName: `${safeName}.wastickers`,
-            caption:
-              `🎨 *${packName}*\n\n` +
+        if (sentCount) {
+          console.log(`[STICKERLY] pack "${packName}" (${query}) → ${sentCount} stickers`);
+          await ctx.progress(
+            `🎨 *${packName}*\n\n` +
               `▸ 📦 Paquete de stickers\n` +
               `▸ 👤 ZENITSU BOT\n` +
-              `▸ 🖼️ ${wastickers.entries.length} stickers\n\n` +
-              `_Toca el paquete para añadirlo a WhatsApp._`,
-          });
-          trackSent(sent);
-          // El mensaje de "buscando" ya no hace falta: queda solo el paquete.
-          await ctx.clearLive();
+              `▸ 🖼️ ${sentCount} stickers enviados${failed ? `\n⚠️ Fallidos: ${failed}` : ''}\n\n` +
+              `_Agrupados bajo ese nombre en tu cajón de stickers._`,
+          );
           return;
         }
       } catch (err) {
