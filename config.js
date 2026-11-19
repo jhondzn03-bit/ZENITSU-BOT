@@ -8,10 +8,14 @@ const OWNER = '50375638328';
 export const config = {
   // ─── Identidad ────────────────────────────────────────────────────────────
   botName: 'ZENITSU BOT',
-  version: '2.12.1',
+  version: '2.13.0',
   // Marca de agua al final de los mensajes. Vacía = mensajes limpios: solo
   // queda el banner "Reenviado desde el canal" (lib/utils watermarkContent).
   watermark: '',
+
+  // Dominios oficiales extra aceptados por .delta (además de los Predeterminados).
+  // Ejemplo: ['deltaexecutor.com', 'panel.delta.app'].
+  deltaDomains: [],
 
   // ─── Dueño ────────────────────────────────────────────────────────────────
   ownerNumber: OWNER,
